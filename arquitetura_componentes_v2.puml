@@ -1,0 +1,52 @@
+@startuml arquitetura_componentes_v2
+skinparam componentStyle uml2
+left to right direction
+
+package "Sensor A" {
+    usecase "Comunicação\nentre sensores" as CommA
+    usecase "Sensor de\nTemperatura" as TempA
+    usecase "Armazenamento\n(buffer offline)" as StorageA
+    usecase "Biblioteca de\ncomunicação" as LibA
+
+    TempA --> StorageA
+    StorageA --> LibA
+    StorageA --> CommA
+}
+
+package "Sensor B" {
+    usecase "Comunicação\nentre sensores" as CommB
+    usecase "Sensor de\nTemperatura" as TempB
+    usecase "Armazenamento\n(buffer offline +\nfila separada de A)" as StorageB
+    usecase "Biblioteca de\ncomunicação" as LibB
+
+    TempB --> StorageB
+    CommB --> StorageB
+    StorageB --> LibB
+}
+
+package "Broker" {
+    usecase "Gateway\n(sessão e fila\npor sensor)" as Gateway
+    usecase "Monitor de status\n(dormindo/offline)" as Monitor
+    usecase "Gerenciador\nde Tópicos" as Gerenciador
+    usecase "Armazenamento\npersistente" as StorageBroker
+
+    Gateway --> Monitor
+    Gateway --> Gerenciador
+    Gerenciador --> StorageBroker
+}
+
+package "Consumidor" {
+    usecase "Biblioteca de\ncomunicação" as ClientConsumidor
+    usecase "Tratamento de\nduplicatas\n(sensor + seq)" as Tratamento
+    usecase "Aplicação" as App
+
+    ClientConsumidor --> Tratamento
+    Tratamento --> App
+}
+
+LibA --> Gateway : TCP (com conexão)\nPUBLISH, SLEEP / ACK
+CommA ..> CommB : Sem conexão:\nrepasse por rádio
+LibB --> Gateway : TCP: envia os dados\nde A e B / ACK
+Gerenciador --> ClientConsumidor : TCP: distribui por\ntópico / ACK
+
+@enduml

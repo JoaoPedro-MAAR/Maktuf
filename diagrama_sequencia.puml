@@ -1,0 +1,78 @@
+@startuml diagrama_sequencia
+title Middleware Pub/Sub - Telemetria de Sensores Remotos
+
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+skinparam noteBackgroundColor #FEFDE7
+skinparam sequenceGroupBodyBackgroundColor #FAFAFA
+
+participant "Sensor A" as A
+participant "Sensor B\n(vizinho)" as B
+participant "Broker" as BR
+participant "Serviço Consumidor" as C
+
+== Cenário 1: operação normal ==
+
+note over A, C : Conexões sobre TCP (three-way handshake omitido)
+
+C -> BR : SUBSCRIBE(sensores/+/temperatura)
+BR --> C : SUBACK
+
+A -> BR : CONNECT(sensor_id)
+BR --> A : CONNACK(hora do broker)
+note left of A : Ajusta o relógio\ncom a hora do broker
+
+A -> BR : PUBLISH(sensor_id, seq, timestamp, temperatura)
+activate BR
+BR -> BR : Persiste a mensagem
+BR --> A : ACK(seq)
+note left of A : Só agora a leitura\nsai do buffer
+BR -> C : PUBLISH(sensor_id, seq, timestamp, temperatura)
+C -> C : Descarta se duplicada\n(sensor_id + seq)
+C --> BR : ACK(seq)
+deactivate BR
+
+== Cenário 2: sensor dorme para economizar energia ==
+
+A -> BR : SLEEP(duração = X s)
+BR --> A : ACK
+BR -> BR : Marca Sensor A como DORMINDO\n(prazo = X + tolerância)
+
+... X segundos depois ...
+
+alt Sensor acorda dentro do prazo
+  A -> BR : CONNECT(sensor_id)
+  BR --> A : CONNACK(hora do broker)
+  loop leituras acumuladas, da mais antiga para a mais nova
+    A -> BR : PUBLISH(sensor_id, seq, timestamp, temperatura)
+    BR --> A : ACK(seq)
+    BR -> C : PUBLISH(sensor_id, seq, timestamp, temperatura)
+    C --> BR : ACK(seq)
+  end
+else Prazo esgotado sem contato
+  BR -> BR : Marca Sensor A como OFFLINE
+  BR -> C : PUBLISH(sensores/A/status = offline)
+  C --> BR : ACK
+end
+
+== Cenário 3: Sensor A sem conexão com o broker (repasse via vizinho) ==
+
+note over A : Leituras acumulam\nno buffer de A
+
+A -> B : PEDIDO_ROTA(sensor_id)
+B --> A : RESPOSTA_ROTA(conectado, bateria, espaço livre)
+
+alt B conectado ao broker e com recursos
+  A -> B : RELAY(mensagens pendentes de A)
+  note right of B : Fila separada;\ndados próprios de B\ntêm prioridade
+  B -> BR : PUBLISH(mensagens de A, origem = sensor_id A)
+  BR --> B : ACK(seqs de A)
+  B --> A : ACK(seqs) repassado
+  note left of A : Só agora A apaga\nas mensagens do buffer
+  BR -> C : PUBLISH(mensagens de A)
+  C --> BR : ACK(seqs)
+else B sem conexão ou sem recursos
+  A -> A : Mantém no buffer e tenta\noutro vizinho mais tarde
+end
+
+@enduml
