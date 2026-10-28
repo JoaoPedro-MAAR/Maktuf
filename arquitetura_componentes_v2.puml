@@ -2,37 +2,37 @@
 skinparam componentStyle uml2
 left to right direction
 
-package "Sensor A" {
-    usecase "Comunicação\nentre sensores" as CommA
+package "Sensor" {
     usecase "Sensor de\nTemperatura" as TempA
-    usecase "Armazenamento\n(buffer offline)" as StorageA
+    usecase "Armazenamento\n(buffer offline;\ndescarta a mais antiga)" as StorageA
     usecase "Biblioteca de\ncomunicação" as LibA
 
     TempA --> StorageA
     StorageA --> LibA
-    StorageA --> CommA
 }
 
-package "Sensor B" {
-    usecase "Comunicação\nentre sensores" as CommB
-    usecase "Sensor de\nTemperatura" as TempB
-    usecase "Armazenamento\n(buffer offline +\nfila separada de A)" as StorageB
-    usecase "Biblioteca de\ncomunicação" as LibB
-
-    TempB --> StorageB
-    CommB --> StorageB
-    StorageB --> LibB
-}
-
-package "Broker" {
+package "Broker primário" {
     usecase "Gateway\n(sessão e fila\npor sensor)" as Gateway
     usecase "Monitor de status\n(dormindo/offline)" as Monitor
     usecase "Gerenciador\nde Tópicos" as Gerenciador
     usecase "Armazenamento\npersistente" as StorageBroker
+    usecase "Replicação e\nheartbeat" as Replicacao
 
     Gateway --> Monitor
     Gateway --> Gerenciador
     Gerenciador --> StorageBroker
+    StorageBroker --> Replicacao
+}
+
+package "Broker reserva" {
+    usecase "Réplica\n(mesmos componentes\ndo primário)" as Replica
+}
+
+package "Juiz" {
+    usecase "Monitor de\nheartbeat" as Heartbeat
+    usecase "Coordenação de\nfailover e\nsincronização" as Coordenacao
+
+    Heartbeat --> Coordenacao
 }
 
 package "Consumidor" {
@@ -44,9 +44,12 @@ package "Consumidor" {
     Tratamento --> App
 }
 
-LibA --> Gateway : TCP (com conexão)\nPUBLISH, SLEEP / ACK
-CommA ..> CommB : Sem conexão:\nrepasse por rádio
-LibB --> Gateway : TCP: envia os dados\nde A e B / ACK
-Gerenciador --> ClientConsumidor : TCP: distribui por\ntópico / ACK
+LibA --> Gateway : TCP: PUBLISH / ACK(seq),\nSLEEP
+Gerenciador --> ClientConsumidor : TCP: distribui por\ntópico / ACK(seq)
+Replicacao --> Replica : TCP: REPLICA (leituras e\ninscrições) / ACK(seq)
+Replicacao --> Heartbeat : HEARTBEAT
+Replica --> Heartbeat : HEARTBEAT
+Coordenacao ..> Replica : PROMOVER: assume o IP\nvirtual (se o primário falhar)
+LibA ..> Replica : Failover: mesmo endereço\n(IP virtual)
 
 @enduml
