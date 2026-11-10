@@ -82,18 +82,18 @@ Além disso no contexto de alta disponibilidade o Broker seria replicado, tendo 
 
 #### Rascunho
 
-![Rascunho do diagrama de sequência](rascunho_sequencia.png)
+![Rascunho do diagrama de sequência](../diagramas/rascunho_sequencia.png)
 
 #### Diagrama completo realizado com ajuda de IA
 
-![Diagrama de sequência](diagrama_sequencia.png)
+![Diagrama de sequência](../diagramas/diagrama_sequencia.png)
 
 ### Diagrama de Componentes 
 
 #### Rascunho
 
-![Rascunho do diagrama de componentes](rascunho_componentes.png)
+![Rascunho do diagrama de componentes](../diagramas/rascunho_componentes.png)
 
 #### Definitivo com ajuda de IA 
 
-![Diagrama de componentes](arquitetura_componentes_v2.png)
+![Diagrama de componentes](../diagramas/arquitetura_componentes_v2.png)
