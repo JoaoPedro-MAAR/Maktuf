@@ -4,7 +4,7 @@
 **Cenário escolhido:** Cenário A  
 **Linguagem de implementação:** Go  
 
-Este documento detalha os requisitos do projeto a partir do documento base da disciplina e do documento [Etapa 0 e 1](Etapa%200%20e%201.md). Ele separa o que é **requisito obrigatório**, o que é **decisão de projeto** e o que ainda precisa ser **validado com o professor**.
+Este documento detalha os requisitos do projeto a partir do documento base da disciplina e do documento [Etapa 0 e 1](Etapa%200%20e%201.md). Ele separa o que é **requisito obrigatório**, o que é **decisão de projeto** e o que ainda precisa ser **validado**.
 
 ---
 
@@ -424,7 +424,7 @@ Essas métricas devem ser usadas nos gráficos da Etapa 3 e para validar os RNFs
 
 ## 11. Decisões de projeto e pontos a validar
 
-As decisões abaixo foram adotadas para eliminar ambiguidades do documento base. Elas devem ser discutidas com o professor.
+As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
 
 | ID | Tema | Decisão adotada | Justificativa |
 |---|---|---|---|
