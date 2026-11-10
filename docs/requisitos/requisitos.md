@@ -3,8 +3,6 @@
 **Projeto:** Middleware Publish/Subscribe para Telemetria de Sensores Remotos  
 **Cenário escolhido:** Cenário A  
 **Linguagem de implementação:** Go  
-**Versão:** 1.0  
-**Status:** Proposta para revisão com o professor
 
 Este documento detalha os requisitos do projeto a partir do documento base da disciplina e do documento [Etapa 0 e 1](Etapa%200%20e%201.md). Ele separa o que é **requisito obrigatório**, o que é **decisão de projeto** e o que ainda precisa ser **validado com o professor**.
 
