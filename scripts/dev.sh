@@ -26,6 +26,20 @@ case "${1:-}" in
       gofmt -w "${files[@]}"
     fi
     ;;
+  fmt-check)
+    mapfile -t files < <(go_files)
+    if [ "${#files[@]}" -eq 0 ]; then
+      echo "Nenhum arquivo Go encontrado."
+      exit 0
+    fi
+    unformatted="$(gofmt -l "${files[@]}")"
+    if [ -n "$unformatted" ]; then
+      echo "Arquivos Go fora do padrao gofmt:"
+      echo "$unformatted"
+      exit 1
+    fi
+    echo "Formatacao gofmt OK."
+    ;;
   vet)
     if [ -z "$(go_files)" ]; then
       echo "Nenhum arquivo Go encontrado."
@@ -64,7 +78,7 @@ case "${1:-}" in
       github.com/golangci/golangci-lint/cmd/golangci-lint@"$GOLANGCI_LINT_VERSION"
     ;;
   *)
-    echo "Uso: $0 {setup|fmt|vet|lint|test|check|tools}"
+    echo "Uso: $0 {setup|fmt|fmt-check|vet|lint|test|check|tools}"
     exit 1
     ;;
 esac

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Formatacao, lint e testes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Detectar arquivos Go
+        id: gofiles
+        run: |
+          if git ls-files '*.go' | grep -q .; then
+            echo "has_go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_go=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verificar formatacao (gofmt)
+        if: steps.gofiles.outputs.has_go == 'true'
+        run: ./scripts/dev.sh fmt-check
+
+      - name: go vet
+        if: steps.gofiles.outputs.has_go == 'true'
+        run: ./scripts/dev.sh vet
+
+      - name: golangci-lint
+        if: steps.gofiles.outputs.has_go == 'true'
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61.0
+          args: --timeout=5m
+
+      - name: Testes
+        if: steps.gofiles.outputs.has_go == 'true'
+        run: ./scripts/dev.sh test
