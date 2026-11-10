@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+mapfile -t go_files < <(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+
+if [ "${#go_files[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+if ! command -v gofmt >/dev/null 2>&1; then
+  echo "pre-commit: gofmt nao encontrado. Instale o Go antes de commitar." >&2
+  exit 1
+fi
+
+for file in "${go_files[@]}"; do
+  if ! git diff --quiet -- "$file"; then
+    echo "pre-commit: '$file' possui alteracoes nao staged." >&2
+    echo "pre-commit: adicione todas as alteracoes do arquivo antes de commitar." >&2
+    exit 1
+  fi
+done
+
+echo "pre-commit: formatando arquivos Go com gofmt..."
+gofmt -w "${go_files[@]}"
+git add -- "${go_files[@]}"
+
+if [ ! -f go.mod ]; then
+  echo "pre-commit: go.mod nao encontrado; lint ignorado." >&2
+  exit 0
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "pre-commit: go nao encontrado; lint ignorado." >&2
+  exit 0
+fi
+
+echo "pre-commit: executando go vet..."
+go vet ./...
+
+if [ -x "$repo_root/bin/golangci-lint" ]; then
+  echo "pre-commit: executando golangci-lint..."
+  "$repo_root/bin/golangci-lint" run ./...
+elif command -v golangci-lint >/dev/null 2>&1; then
+  echo "pre-commit: executando golangci-lint..."
+  golangci-lint run ./...
+else
+  echo "pre-commit: golangci-lint nao encontrado; apenas go vet foi executado." >&2
+  echo "pre-commit: instale com './scripts/dev.sh tools' para habilitar o lint completo." >&2
+fi
