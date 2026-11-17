@@ -8,4 +8,5 @@ O projeto prioriza alta confiabilidade por mensagem, alta disponibilidade e isol
 
 - [Requisitos e definição do projeto](docs/requisitos/Etapa%200%20e%201.md)
 - [Requisitos detalhados](docs/requisitos/requisitos.md)
+- [Protocolo de aplicação](docs/protocolo.md)
 - [Diagramas (PNG e PlantUML)](docs/diagramas/)
