@@ -1,0 +1,198 @@
+package protocol_test
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+	"testing/iotest"
+
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
+)
+
+func samples() []protocol.Message {
+	return []protocol.Message{
+		&protocol.Connect{Role: protocol.RoleSensor, ClientID: "sensor-1"},
+		&protocol.ConnAck{Status: protocol.StatusOK},
+		&protocol.Publish{Topic: "sensores/a/temperatura", SensorID: "a", Seq: 1, AgeMS: 1000, Temperature: 25.5},
+		&protocol.PubAck{Status: protocol.StatusPersisted, Seq: 1},
+		&protocol.Subscribe{TopicFilter: "sensores/+/temperatura"},
+		&protocol.SubAck{Status: protocol.StatusOK},
+		&protocol.Unsubscribe{TopicFilter: "sensores/+/temperatura"},
+		&protocol.UnsubAck{Status: protocol.StatusOK},
+		&protocol.Deliver{Topic: "sensores/a/temperatura", SensorID: "a", Seq: 1, TimestampMS: 1700000000000, Temperature: 25.5},
+		&protocol.DeliverAck{Topic: "sensores/a/temperatura", SensorID: "a", Seq: 1},
+		&protocol.Sleep{DurationMS: 60000},
+		&protocol.Heartbeat{BrokerID: "broker-1", State: 1, LastSeq: 42},
+		&protocol.Replica{Kind: protocol.ReplicaReading, Topic: "sensores/a/temperatura", SensorID: "a", Seq: 1, TimestampMS: 1700000000000, Temperature: 25.5},
+		&protocol.Replica{Kind: protocol.ReplicaSubscription, ClientID: "consumer-1", TopicFilter: "sensores/+/temperatura"},
+		&protocol.Replica{Kind: protocol.ReplicaUnsubscribe, ClientID: "consumer-1", TopicFilter: "sensores/+/temperatura"},
+		&protocol.ReplicaAck{Status: protocol.StatusOK, Kind: protocol.ReplicaReading, SensorID: "a", Seq: 1},
+		&protocol.ReplicaAck{Status: protocol.StatusOK, Kind: protocol.ReplicaSubscription, ClientID: "consumer-1", TopicFilter: "sensores/+/temperatura"},
+		&protocol.Promote{BrokerID: "broker-2"},
+	}
+}
+
+func TestRoundTrip(t *testing.T) {
+	for i, want := range samples() {
+		frame, err := protocol.Encode(want)
+		if err != nil {
+			t.Fatalf("caso %d (%s): Encode: %v", i, want.Type(), err)
+		}
+
+		got, err := protocol.Decode(frame)
+		if err != nil {
+			t.Fatalf("caso %d (%s): Decode: %v", i, want.Type(), err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("caso %d (%s): obtido %#v, esperado %#v", i, want.Type(), got, want)
+		}
+	}
+}
+
+func TestReadMessageGlued(t *testing.T) {
+	first := &protocol.Publish{Topic: "sensores/a", SensorID: "a", Seq: 1, AgeMS: 10, Temperature: 25.5}
+	second := &protocol.Subscribe{TopicFilter: "sensores/+/temperatura"}
+
+	var buf bytes.Buffer
+	if err := protocol.WriteMessage(&buf, first); err != nil {
+		t.Fatalf("WriteMessage first: %v", err)
+	}
+	if err := protocol.WriteMessage(&buf, second); err != nil {
+		t.Fatalf("WriteMessage second: %v", err)
+	}
+
+	r := bufio.NewReader(&buf)
+	gotFirst, err := protocol.ReadMessage(r)
+	if err != nil {
+		t.Fatalf("ReadMessage first: %v", err)
+	}
+	gotSecond, err := protocol.ReadMessage(r)
+	if err != nil {
+		t.Fatalf("ReadMessage second: %v", err)
+	}
+
+	if !reflect.DeepEqual(gotFirst, first) {
+		t.Fatalf("primeira: obtido %#v, esperado %#v", gotFirst, first)
+	}
+	if !reflect.DeepEqual(gotSecond, second) {
+		t.Fatalf("segunda: obtido %#v, esperado %#v", gotSecond, second)
+	}
+}
+
+func TestReadMessagePartial(t *testing.T) {
+	first := &protocol.Deliver{Topic: "sensores/a", SensorID: "a", Seq: 7, TimestampMS: 1700000000000, Temperature: 26}
+	second := &protocol.PubAck{Status: protocol.StatusPersisted, Seq: 7}
+
+	var buf bytes.Buffer
+	if err := protocol.WriteMessage(&buf, first); err != nil {
+		t.Fatalf("WriteMessage first: %v", err)
+	}
+	if err := protocol.WriteMessage(&buf, second); err != nil {
+		t.Fatalf("WriteMessage second: %v", err)
+	}
+
+	r := bufio.NewReader(iotest.OneByteReader(&buf))
+	gotFirst, err := protocol.ReadMessage(r)
+	if err != nil {
+		t.Fatalf("ReadMessage first: %v", err)
+	}
+	gotSecond, err := protocol.ReadMessage(r)
+	if err != nil {
+		t.Fatalf("ReadMessage second: %v", err)
+	}
+
+	if !reflect.DeepEqual(gotFirst, first) {
+		t.Fatalf("primeira: obtido %#v, esperado %#v", gotFirst, first)
+	}
+	if !reflect.DeepEqual(gotSecond, second) {
+		t.Fatalf("segunda: obtido %#v, esperado %#v", gotSecond, second)
+	}
+}
+
+func TestMessageTooLarge(t *testing.T) {
+	frame := make([]byte, protocol.HeaderSize)
+	binary.BigEndian.PutUint32(frame[:4], protocol.MaxMessageSize+1)
+	frame[4] = protocol.Version
+	frame[5] = byte(protocol.TypeConnAck)
+
+	if _, err := protocol.Decode(frame); !errors.Is(err, protocol.ErrMessageTooLarge) {
+		t.Fatalf("Decode: esperado ErrMessageTooLarge, obtido %v", err)
+	}
+
+	r := bufio.NewReader(bytes.NewReader(frame[:4]))
+	if _, err := protocol.ReadMessage(r); !errors.Is(err, protocol.ErrMessageTooLarge) {
+		t.Fatalf("ReadMessage: esperado ErrMessageTooLarge, obtido %v", err)
+	}
+}
+
+func TestUnsupportedVersion(t *testing.T) {
+	frame := make([]byte, protocol.HeaderSize)
+	binary.BigEndian.PutUint32(frame[:4], 4)
+	frame[4] = protocol.Version + 1
+	frame[5] = byte(protocol.TypeConnect)
+
+	if _, err := protocol.Decode(frame); !errors.Is(err, protocol.ErrUnsupportedVersion) {
+		t.Fatalf("esperado ErrUnsupportedVersion, obtido %v", err)
+	}
+}
+
+func TestUnknownType(t *testing.T) {
+	frame := make([]byte, protocol.HeaderSize)
+	binary.BigEndian.PutUint32(frame[:4], 4)
+	frame[4] = protocol.Version
+	frame[5] = 0xFF
+
+	if _, err := protocol.Decode(frame); !errors.Is(err, protocol.ErrUnknownType) {
+		t.Fatalf("esperado ErrUnknownType, obtido %v", err)
+	}
+}
+
+func TestTruncatedPayload(t *testing.T) {
+	frame := make([]byte, 10)
+	binary.BigEndian.PutUint32(frame[:4], 6)
+	frame[4] = protocol.Version
+	frame[5] = byte(protocol.TypePublish)
+	frame[8] = 0
+	frame[9] = 10
+
+	if _, err := protocol.Decode(frame); !errors.Is(err, protocol.ErrTruncated) {
+		t.Fatalf("esperado ErrTruncated, obtido %v", err)
+	}
+}
+
+func TestTrailingBytes(t *testing.T) {
+	frame := make([]byte, 10)
+	binary.BigEndian.PutUint32(frame[:4], 6)
+	frame[4] = protocol.Version
+	frame[5] = byte(protocol.TypeConnAck)
+	frame[6] = 0
+	frame[7] = 0
+	frame[8] = byte(protocol.StatusOK)
+	frame[9] = 0
+
+	if _, err := protocol.Decode(frame); !errors.Is(err, protocol.ErrTrailingBytes) {
+		t.Fatalf("esperado ErrTrailingBytes, obtido %v", err)
+	}
+}
+
+func TestEncodeStringTooLong(t *testing.T) {
+	msg := &protocol.Subscribe{TopicFilter: strings.Repeat("a", 70000)}
+	if _, err := protocol.Encode(msg); !errors.Is(err, protocol.ErrStringTooLong) {
+		t.Fatalf("esperado ErrStringTooLong, obtido %v", err)
+	}
+}
+
+func FuzzDecode(f *testing.F) {
+	frame, err := protocol.Encode(&protocol.Publish{Topic: "t", SensorID: "s", Seq: 1, AgeMS: 2, Temperature: 3.5})
+	if err != nil {
+		f.Fatalf("Encode: %v", err)
+	}
+	f.Add(frame)
+	f.Fuzz(func(_ *testing.T, data []byte) {
+		_, _ = protocol.Decode(data)
+	})
+}
