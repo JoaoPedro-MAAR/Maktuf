@@ -94,6 +94,21 @@ bytes. Isso resolve, respectivamente, mensagens coladas e leituras parciais.
 | `age_ms` | `uint32` |
 | `temperature` | `float32` |
 
+Regras do `PUBLISH`:
+
+- `topic` deve ser um tópico concreto: mesmas regras do `topic_filter`, sem
+  curingas. `sensor_id` não pode ser vazio. Publicação inválida faz o broker
+  encerrar a conexão, sem responder.
+- Sem inscritos cujo filtro case com `topic`, o broker descarta a leitura e
+  responde `PUBACK(NO_SUBSCRIBERS, seq)`.
+- Com inscritos, a leitura é enfileirada uma vez para cada inscrito (mesmo que
+  ele case por mais de um filtro) e o broker responde `PUBACK(PERSISTED, seq)`.
+- O broker guarda o último `seq` enfileirado de cada `sensor_id`. Uma leitura
+  com `seq` menor ou igual é tratada como reenvio: responde
+  `PUBACK(PERSISTED, seq)` sem enfileirar de novo.
+- Estado atual: filas apenas em memória; persistência e replicação antes do
+  `PERSISTED` (DP-04) ainda não foram implementadas.
+
 ### PUBACK
 
 | Campo | Tipo |
@@ -137,6 +152,17 @@ Regras do `topic_filter`:
 | `timestamp_ms` | `int64` |
 | `temperature` | `float32` |
 
+Regras do `DELIVER`:
+
+- `timestamp_ms` é calculado pelo broker como `agora - age_ms`, em
+  milissegundos Unix UTC.
+- Cada inscrito (`client_id`) tem uma fila própria, que existe mesmo com o
+  cliente desconectado. A entrega é feita uma leitura por vez: a próxima só é
+  enviada depois do `DELIVER_ACK` da atual, o que preserva a ordem de `seq` por
+  sensor.
+- Uma leitura sem `DELIVER_ACK` é reenviada quando o cliente reconecta
+  (pelo menos uma vez); duplicatas são possíveis.
+
 ### DELIVER_ACK
 
 | Campo | Tipo |
@@ -144,6 +170,9 @@ Regras do `topic_filter`:
 | `topic` | `string` |
 | `sensor_id` | `string` |
 | `seq` | `uint64` |
+
+Um `DELIVER_ACK` que não corresponde à leitura pendente (duplicado ou
+desconhecido) é ignorado e não encerra a sessão.
 
 ### SLEEP
 

@@ -18,14 +18,16 @@ type Config struct {
 }
 
 type Server struct {
-	cfg       Config
-	log       *slog.Logger
-	listener  net.Listener
-	mu        sync.Mutex
-	sessions  map[*session]struct{}
-	topics    *TopicManager
-	wg        sync.WaitGroup
-	closeOnce sync.Once
+	cfg        Config
+	log        *slog.Logger
+	listener   net.Listener
+	mu         sync.Mutex
+	sessions   map[*session]struct{}
+	topics     *TopicManager
+	deliveries *DeliveryManager
+	publisher  *publisher
+	wg         sync.WaitGroup
+	closeOnce  sync.Once
 }
 
 func NewServer(cfg Config) *Server {
@@ -35,11 +37,15 @@ func NewServer(cfg Config) *Server {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	topics := NewTopicManager()
+	deliveries := NewDeliveryManager()
 	return &Server{
-		cfg:      cfg,
-		log:      cfg.Logger,
-		sessions: make(map[*session]struct{}),
-		topics:   NewTopicManager(),
+		cfg:        cfg,
+		log:        cfg.Logger,
+		sessions:   make(map[*session]struct{}),
+		topics:     topics,
+		deliveries: deliveries,
+		publisher:  newPublisher(topics, deliveries),
 	}
 }
 
@@ -89,11 +95,13 @@ func (s *Server) Serve(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				s.wg.Wait()
+				s.deliveries.wait()
 				return nil
 			default:
 			}
 			if errors.Is(err, net.ErrClosed) {
 				s.wg.Wait()
+				s.deliveries.wait()
 				return nil
 			}
 			s.log.Error("falha ao aceitar conexao", "error", err)

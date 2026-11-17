@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
 )
@@ -19,6 +20,8 @@ type session struct {
 	reader   *bufio.Reader
 	clientID string
 	role     protocol.Role
+	writeMu  sync.Mutex
+	log      *slog.Logger
 }
 
 func newSession(s *Server, conn net.Conn) *session {
@@ -53,14 +56,19 @@ func (s *session) serve(ctx context.Context) {
 		return
 	}
 
-	if err := protocol.WriteMessage(s.conn, &protocol.ConnAck{Status: protocol.StatusOK}); err != nil {
+	if err := s.write(&protocol.ConnAck{Status: protocol.StatusOK}); err != nil {
 		log.Warn("falha ao enviar CONNACK", "error", err)
 		return
 	}
 
 	s.clientID = connect.ClientID
 	s.role = connect.Role
+	s.log = log
 	log.Info("cliente conectado")
+
+	deliveries := s.server.deliveries
+	deliveries.attach(s.clientID, s)
+	defer deliveries.detach(s.clientID, s)
 
 	for {
 		select {
@@ -80,6 +88,10 @@ func (s *session) serve(ctx context.Context) {
 			err = s.handleSubscribe(log, m)
 		case *protocol.Unsubscribe:
 			err = s.handleUnsubscribe(log, m)
+		case *protocol.Publish:
+			err = s.handlePublish(log, m)
+		case *protocol.DeliverAck:
+			s.handleDeliverAck(log, m)
 		default:
 			log.Debug("mensagem recebida (nao tratada)", "type", msg.Type().String())
 		}
@@ -95,7 +107,7 @@ func (s *session) handleSubscribe(log *slog.Logger, m *protocol.Subscribe) error
 		return fmt.Errorf("%w: %q", errInvalidFilter, m.TopicFilter)
 	}
 	created := s.server.topics.Subscribe(s.clientID, m.TopicFilter)
-	if err := protocol.WriteMessage(s.conn, &protocol.SubAck{Status: protocol.StatusOK}); err != nil {
+	if err := s.write(&protocol.SubAck{Status: protocol.StatusOK}); err != nil {
 		return err
 	}
 	log.Info("inscricao registrada", "topic_filter", m.TopicFilter, "topic_created", created)
@@ -107,11 +119,22 @@ func (s *session) handleUnsubscribe(log *slog.Logger, m *protocol.Unsubscribe) e
 		return fmt.Errorf("%w: %q", errInvalidFilter, m.TopicFilter)
 	}
 	removed := s.server.topics.Unsubscribe(s.clientID, m.TopicFilter)
-	if err := protocol.WriteMessage(s.conn, &protocol.UnsubAck{Status: protocol.StatusOK}); err != nil {
+	if err := s.write(&protocol.UnsubAck{Status: protocol.StatusOK}); err != nil {
 		return err
 	}
 	log.Info("inscricao removida", "topic_filter", m.TopicFilter, "topic_removed", removed)
 	return nil
+}
+
+func (s *session) write(msg protocol.Message) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return protocol.WriteMessage(s.conn, msg)
+}
+
+func (s *session) deliveryFailed(err error) {
+	s.log.Warn("falha ao enviar DELIVER", "error", err)
+	_ = s.conn.Close()
 }
 
 func (s *session) close() error {
