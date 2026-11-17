@@ -241,3 +241,72 @@ func TestServerShutdownClosesConnections(t *testing.T) {
 		t.Fatal("esperava que a conexao fosse fechada no shutdown")
 	}
 }
+
+func connectClient(t *testing.T, addr, clientID string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	conn := dial(t, addr)
+	if err := protocol.WriteMessage(conn, &protocol.Connect{Role: protocol.RoleConsumer, ClientID: clientID}); err != nil {
+		t.Fatalf("envio CONNECT: %v", err)
+	}
+	r := bufio.NewReader(conn)
+	if ack := readConnAck(t, r); ack.Status != protocol.StatusOK {
+		t.Fatalf("status CONNACK = %v, esperado %v", ack.Status, protocol.StatusOK)
+	}
+	return conn, r
+}
+
+func TestServerSubscribeAndUnsubscribe(t *testing.T) {
+	ts := startServer(t)
+	conn, r := connectClient(t, ts.addr, "consumer-1")
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+
+	if err := protocol.WriteMessage(conn, &protocol.Subscribe{TopicFilter: "sensores/+/temperatura"}); err != nil {
+		t.Fatalf("envio SUBSCRIBE: %v", err)
+	}
+	msg, err := protocol.ReadMessage(r)
+	if err != nil {
+		t.Fatalf("leitura SUBACK: %v", err)
+	}
+	subAck, ok := msg.(*protocol.SubAck)
+	if !ok {
+		t.Fatalf("esperava SUBACK, obtido %T", msg)
+	}
+	if subAck.Status != protocol.StatusOK {
+		t.Fatalf("status SUBACK = %v, esperado %v", subAck.Status, protocol.StatusOK)
+	}
+
+	if err := protocol.WriteMessage(conn, &protocol.Unsubscribe{TopicFilter: "sensores/+/temperatura"}); err != nil {
+		t.Fatalf("envio UNSUBSCRIBE: %v", err)
+	}
+	msg, err = protocol.ReadMessage(r)
+	if err != nil {
+		t.Fatalf("leitura UNSUBACK: %v", err)
+	}
+	unsubAck, ok := msg.(*protocol.UnsubAck)
+	if !ok {
+		t.Fatalf("esperava UNSUBACK, obtido %T", msg)
+	}
+	if unsubAck.Status != protocol.StatusOK {
+		t.Fatalf("status UNSUBACK = %v, esperado %v", unsubAck.Status, protocol.StatusOK)
+	}
+}
+
+func TestServerClosesOnInvalidFilter(t *testing.T) {
+	ts := startServer(t)
+
+	for _, tc := range []protocol.Message{
+		&protocol.Subscribe{TopicFilter: "sensores/a+b"},
+		&protocol.Unsubscribe{TopicFilter: "sensores//temperatura"},
+	} {
+		t.Run(tc.Type().String(), func(t *testing.T) {
+			conn, r := connectClient(t, ts.addr, "consumer-1")
+			if err := protocol.WriteMessage(conn, tc); err != nil {
+				t.Fatalf("envio: %v", err)
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(timeout))
+			if _, err := protocol.ReadMessage(r); err == nil {
+				t.Fatal("esperava que a conexao fosse fechada")
+			}
+		})
+	}
+}

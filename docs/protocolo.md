@@ -107,6 +107,20 @@ bytes. Isso resolve, respectivamente, mensagens coladas e leituras parciais.
 |---|---|
 | `topic_filter` | `string` |
 
+Regras do `topic_filter`:
+
+- Níveis são separados por `/`; nenhum nível pode ser vazio (`a//b`, `/a` e
+  `a/` são inválidos).
+- `+` casa exatamente um nível e deve ocupar o nível inteiro (`a/+/c` é válido;
+  `a+b` é inválido).
+- `#` (curinga multinível) não é suportado.
+- Filtro inválido faz o broker encerrar a conexão, sem responder.
+- `SUBSCRIBE` repetido e `UNSUBSCRIBE` de inscrição inexistente são idempotentes
+  e respondem `OK`.
+- O tópico (identificado pelo filtro) é criado na primeira inscrição e removido
+  quando o último inscrito cancela. Inscrições sobrevivem à desconexão do
+  cliente e só são removidas por `UNSUBSCRIBE`.
+
 ### SUBACK / UNSUBACK
 
 | Campo | Tipo |
