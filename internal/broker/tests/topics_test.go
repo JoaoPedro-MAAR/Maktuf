@@ -1,60 +1,32 @@
-package broker
+package broker_test
 
 import (
 	"fmt"
 	"reflect"
 	"sync"
 	"testing"
-)
 
-func TestMatch(t *testing.T) {
-	cases := []struct {
-		filter string
-		topic  string
-		want   bool
-	}{
-		{"sensores/a/temperatura", "sensores/a/temperatura", true},
-		{"sensores/a/temperatura", "sensores/b/temperatura", false},
-		{"sensores/+/temperatura", "sensores/a/temperatura", true},
-		{"sensores/+/temperatura", "sensores/b/temperatura", true},
-		{"sensores/+/temperatura", "sensores/a/b/temperatura", false},
-		{"sensores/+/temperatura", "sensores/temperatura", false},
-		{"sensores/+/temperatura", "sensores/a/umidade", false},
-		{"sensores/+/temperatura", "sensores//temperatura", false},
-		{"+/+", "a/b", true},
-		{"+/+", "a", false},
-		{"+/+", "a/b/c", false},
-		{"a/+/c", "a/b/c", true},
-		{"a/+/c", "a/b/d", false},
-		{"a/+/c", "x/b/c", false},
-		{"+", "sensores", true},
-		{"sensores", "sensores/a", false},
-	}
-	for _, tc := range cases {
-		if got := match(tc.filter, tc.topic); got != tc.want {
-			t.Errorf("match(%q, %q) = %v, esperado %v", tc.filter, tc.topic, got, tc.want)
-		}
-	}
-}
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/broker"
+)
 
 func TestValidFilter(t *testing.T) {
 	valid := []string{"sensores", "sensores/a/temperatura", "sensores/+/temperatura", "+", "+/+", "a/+/c"}
 	for _, f := range valid {
-		if !ValidFilter(f) {
+		if !broker.ValidFilter(f) {
 			t.Errorf("ValidFilter(%q) = false, esperado true", f)
 		}
 	}
 
 	invalid := []string{"", "/", "a//b", "/a", "a/", "a+b", "a/+b/c", "#", "a/#", "a/b#"}
 	for _, f := range invalid {
-		if ValidFilter(f) {
+		if broker.ValidFilter(f) {
 			t.Errorf("ValidFilter(%q) = true, esperado false", f)
 		}
 	}
 }
 
 func TestTopicLifecycle(t *testing.T) {
-	m := NewTopicManager()
+	m := broker.NewTopicManager()
 	const filter = "sensores/+/temperatura"
 
 	if m.HasTopic(filter) {
@@ -88,7 +60,7 @@ func TestTopicLifecycle(t *testing.T) {
 }
 
 func TestUnsubscribeUnknown(t *testing.T) {
-	m := NewTopicManager()
+	m := broker.NewTopicManager()
 	if m.Unsubscribe("c1", "sensores/a") {
 		t.Fatal("cancelar inscricao em topico inexistente nao deveria remover nada")
 	}
@@ -103,7 +75,7 @@ func TestUnsubscribeUnknown(t *testing.T) {
 }
 
 func TestSubscribers(t *testing.T) {
-	m := NewTopicManager()
+	m := broker.NewTopicManager()
 
 	if got := m.Subscribers("sensores/a/temperatura"); len(got) != 0 {
 		t.Fatalf("sem inscritos, obtido %v", got)
@@ -136,7 +108,7 @@ func TestSubscribers(t *testing.T) {
 }
 
 func TestTopicManagerConcurrent(t *testing.T) {
-	m := NewTopicManager()
+	m := broker.NewTopicManager()
 	const workers = 16
 	const iterations = 200
 
