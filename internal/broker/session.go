@@ -3,10 +3,15 @@ package broker
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
 )
+
+var errInvalidFilter = errors.New("broker: filtro de topico invalido")
 
 type session struct {
 	server   *Server
@@ -69,8 +74,44 @@ func (s *session) serve(ctx context.Context) {
 			log.Info("conexao encerrada", "error", err)
 			return
 		}
-		log.Debug("mensagem recebida (nao tratada nesta task)", "type", msg.Type().String())
+
+		switch m := msg.(type) {
+		case *protocol.Subscribe:
+			err = s.handleSubscribe(log, m)
+		case *protocol.Unsubscribe:
+			err = s.handleUnsubscribe(log, m)
+		default:
+			log.Debug("mensagem recebida (nao tratada)", "type", msg.Type().String())
+		}
+		if err != nil {
+			log.Warn("encerrando conexao", "type", msg.Type().String(), "error", err)
+			return
+		}
 	}
+}
+
+func (s *session) handleSubscribe(log *slog.Logger, m *protocol.Subscribe) error {
+	if !ValidFilter(m.TopicFilter) {
+		return fmt.Errorf("%w: %q", errInvalidFilter, m.TopicFilter)
+	}
+	created := s.server.topics.Subscribe(s.clientID, m.TopicFilter)
+	if err := protocol.WriteMessage(s.conn, &protocol.SubAck{Status: protocol.StatusOK}); err != nil {
+		return err
+	}
+	log.Info("inscricao registrada", "topic_filter", m.TopicFilter, "topic_created", created)
+	return nil
+}
+
+func (s *session) handleUnsubscribe(log *slog.Logger, m *protocol.Unsubscribe) error {
+	if !ValidFilter(m.TopicFilter) {
+		return fmt.Errorf("%w: %q", errInvalidFilter, m.TopicFilter)
+	}
+	removed := s.server.topics.Unsubscribe(s.clientID, m.TopicFilter)
+	if err := protocol.WriteMessage(s.conn, &protocol.UnsubAck{Status: protocol.StatusOK}); err != nil {
+		return err
+	}
+	log.Info("inscricao removida", "topic_filter", m.TopicFilter, "topic_removed", removed)
+	return nil
 }
 
 func (s *session) close() error {

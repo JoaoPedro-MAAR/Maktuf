@@ -23,6 +23,7 @@ type Server struct {
 	listener  net.Listener
 	mu        sync.Mutex
 	sessions  map[*session]struct{}
+	topics    *TopicManager
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 }
@@ -38,6 +39,7 @@ func NewServer(cfg Config) *Server {
 		cfg:      cfg,
 		log:      cfg.Logger,
 		sessions: make(map[*session]struct{}),
+		topics:   NewTopicManager(),
 	}
 }
 
