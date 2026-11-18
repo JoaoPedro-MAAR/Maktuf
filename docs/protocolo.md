@@ -135,6 +135,9 @@ Regras do `topic_filter`:
 - O tópico (identificado pelo filtro) é criado na primeira inscrição e removido
   quando o último inscrito cancela. Inscrições sobrevivem à desconexão do
   cliente e só são removidas por `UNSUBSCRIBE`.
+- `UNSUBSCRIBE` afeta apenas leituras publicadas depois dele. Leituras que já
+  estavam na fila do inscrito continuam sendo entregues, pois o broker já as
+  confirmou ao sensor com `PERSISTED` (garantia "pelo menos uma vez").
 
 ### SUBACK / UNSUBACK
 
