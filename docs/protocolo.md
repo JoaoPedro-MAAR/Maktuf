@@ -22,7 +22,9 @@ corpo.
 - `length` = quantidade de bytes **depois** do campo `length`
   (`version + type + flags + payload`), ou seja, no mínimo 4.
 - Todos os inteiros são **big-endian**.
-- `flags` é reservado e atualmente enviado como `0`.
+- `flags` é reservado e enviado como `0`, exceto no `DELIVER`, que usa o bit
+  `0x0001` (`GAP_BEFORE`). Os demais bits continuam reservados e devem ser
+  ignorados na recepção.
 - `version` atual: `1`.
 
 O leitor deve usar `bufio.Reader` e `io.ReadFull`: o primeiro guarda bytes
@@ -111,6 +113,10 @@ Regras do `PUBLISH`:
   gravação falhar, o broker encerra a conexão sem responder e o sensor reenvia.
 - O último `seq` de cada sensor também é persistido, então reenvios continuam
   sendo reconhecidos depois de um reinício do broker.
+- Cada sessão de sensor tem uma fila limitada de `PUBLISH` aceitos e ainda sem
+  `PUBACK`. Quando ela enche, o broker para de ler o socket daquele sensor até
+  que o `PUBACK` libere espaço (backpressure). Nenhum `PUBACK` é emitido nesse
+  meio-tempo e os outros sensores continuam sendo atendidos (DP-06).
 - Estado atual: a replicação na reserva antes do `PERSISTED` (DP-04) ainda não
   foi implementada; hoje `PERSISTED` garante apenas a persistência no broker
   primário.
@@ -179,6 +185,20 @@ Regras do `DELIVER`:
 - Inscrições, filas e cursores sobrevivem a reinício do broker: após o
   reinício, a entrega retoma da primeira leitura não confirmada de cada
   inscrito, sem que ele precise refazer o `SUBSCRIBE`.
+- Cada fila de assinante tem retenção limitada. Quando a retenção é excedida, o
+  broker descarta a leitura mais antiga **depois da cabeça** (a cabeça pode
+  estar em trânsito aguardando `DELIVER_ACK`) e registra o descarte, sem
+  bloquear o sensor nem os demais assinantes (RF-36, DP-07).
+- A próxima leitura do mesmo sensor entregue àquele assinante leva
+  `flags & 0x0001` (`GAP_BEFORE`): antes dela, leituras daquele sensor foram
+  descartadas por retenção. A flag não informa quais `seq` foram perdidos nem
+  distingue a causa da lacuna (RF-37, CE-11).
+- A flag e a marcação de lacuna pendente são persistidas: a lacuna continua
+  explícita após reinício do broker e a reconexão do assinante. O contador de
+  descartes fica só em memória e é zerado no reinício.
+- O descarte por retenção pode remover uma leitura que o sensor já recebeu como
+  `PERSISTED`. Essa tensão com a garantia "pelo menos uma vez" está registrada
+  em [`ressalvas.md`](ressalvas.md).
 
 ### DELIVER_ACK
 

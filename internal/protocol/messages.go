@@ -130,15 +130,24 @@ func (m *UnsubAck) decodePayload(d *decoder) {
 	m.Status = Status(d.u8())
 }
 
+// DeliverFlagGap marca que leituras do mesmo sensor foram descartadas por
+// retenção antes desta entrega (RF-37, CE-11).
+const DeliverFlagGap uint16 = 0x0001
+
 type Deliver struct {
 	Topic       string
 	SensorID    string
 	Seq         uint64
 	TimestampMS int64
 	Temperature float32
+	Flags       uint16
 }
 
 func (*Deliver) Type() Type { return TypeDeliver }
+
+func (m *Deliver) headerFlags() uint16 { return m.Flags }
+
+func (m *Deliver) setHeaderFlags(flags uint16) { m.Flags = flags }
 
 func (m *Deliver) encodePayload(e *encoder) {
 	e.str(m.Topic)

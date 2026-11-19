@@ -8,9 +8,20 @@ import (
 	"sync"
 )
 
-const DefaultAddr = ":7000"
+const (
+	DefaultAddr = ":7000"
 
-var errNotListening = errors.New("broker: servidor nao esta escutando")
+	// DefaultSensorQueueLimit limita os PUBLISH aceitos e ainda sem PUBACK de
+	// cada sensor (RF-34). Ao lotar, só aquele sensor sofre backpressure.
+	DefaultSensorQueueLimit = 32
+	// DefaultSubscriberQueueLimit limita a retenção de cada assinante (RF-36).
+	DefaultSubscriberQueueLimit = 10000
+)
+
+var (
+	errNotListening = errors.New("broker: servidor nao esta escutando")
+	errQueueLimit   = errors.New("broker: limite da fila do assinante deve ser >= 2")
+)
 
 type Config struct {
 	Addr string
@@ -18,7 +29,21 @@ type Config struct {
 	// (inscrições, filas e cursores). Vazio mantém o estado só em memória,
 	// sem sobreviver a reinício; serve apenas para testes.
 	DataDir string
-	Logger  *slog.Logger
+	// SensorQueueLimit é quantos PUBLISH de um sensor podem aguardar PUBACK.
+	// Valores <= 0 usam DefaultSensorQueueLimit.
+	SensorQueueLimit int
+	// SubscriberQueueLimit é a retenção de cada assinante. Valores <= 0 usam
+	// DefaultSubscriberQueueLimit; 1 é inválido (a cabeça é preservada).
+	SubscriberQueueLimit int
+	Logger               *slog.Logger
+}
+
+// QueueStats expõe profundidade e descartes das filas para métricas e testes.
+type QueueStats struct {
+	SensorQueues      map[string]int
+	SubscriberQueues  map[string]int
+	RetentionDrops    map[string]uint64
+	BackpressureWaits uint64
 }
 
 type Server struct {
@@ -30,6 +55,7 @@ type Server struct {
 	topics     *TopicManager
 	deliveries *DeliveryManager
 	publisher  *publisher
+	scheduler  *scheduler
 	store      *store
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
@@ -42,16 +68,24 @@ func NewServer(cfg Config) *Server {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if cfg.SensorQueueLimit <= 0 {
+		cfg.SensorQueueLimit = DefaultSensorQueueLimit
+	}
+	if cfg.SubscriberQueueLimit <= 0 {
+		cfg.SubscriberQueueLimit = DefaultSubscriberQueueLimit
+	}
 	st := &store{}
 	topics := NewTopicManager()
-	deliveries := newDeliveryManager(st)
+	deliveries := newDeliveryManager(st, cfg.Logger, cfg.SubscriberQueueLimit)
+	pub := newPublisher(topics, deliveries, st)
 	return &Server{
 		cfg:        cfg,
 		log:        cfg.Logger,
 		sessions:   make(map[*session]struct{}),
 		topics:     topics,
 		deliveries: deliveries,
-		publisher:  newPublisher(topics, deliveries, st),
+		publisher:  pub,
+		scheduler:  newScheduler(pub.Publish),
 		store:      st,
 	}
 }
@@ -59,6 +93,9 @@ func NewServer(cfg Config) *Server {
 // Listen recupera o estado persistido em Config.DataDir e abre o socket. O
 // estado é carregado antes de aceitar conexões (RF-50).
 func (s *Server) Listen() error {
+	if s.cfg.SubscriberQueueLimit < 2 {
+		return errQueueLimit
+	}
 	if err := s.openStore(); err != nil {
 		return err
 	}
@@ -94,7 +131,7 @@ func (s *Server) openStore() error {
 	}
 	pending := 0
 	for _, q := range state.queues {
-		pending += len(q)
+		pending += q.len()
 	}
 	s.log.Info("estado recuperado", "data_dir", s.cfg.DataDir,
 		"subscribers", len(state.subs), "pending", pending, "sensors", len(state.sensors))
@@ -130,6 +167,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		}
 	}()
 
+	s.scheduler.start()
 	s.log.Info("broker escutando", "addr", s.listener.Addr().String())
 
 	for {
@@ -162,8 +200,21 @@ func (s *Server) Serve(ctx context.Context) error {
 // store, para nenhuma gravação ficar pela metade.
 func (s *Server) shutdown() error {
 	s.wg.Wait()
+	s.scheduler.close()
 	s.deliveries.wait()
 	return s.store.close()
+}
+
+// QueueStats devolve uma fotografia das filas: PUBLISH sem PUBACK por sensor,
+// profundidade por assinante, descartes por retenção e esperas de backpressure.
+func (s *Server) QueueStats() QueueStats {
+	subscriberDepths, drops := s.deliveries.stats()
+	return QueueStats{
+		SensorQueues:      s.scheduler.depths(),
+		SubscriberQueues:  subscriberDepths,
+		RetentionDrops:    drops,
+		BackpressureWaits: s.scheduler.waits.Load(),
+	}
 }
 
 func (s *Server) Close() error {

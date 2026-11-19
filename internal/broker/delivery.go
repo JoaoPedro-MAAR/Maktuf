@@ -19,17 +19,30 @@ type deliveryConn interface {
 // DELIVER_ACK da mesma leitura, o que preserva a ordem por sensor (RF-15) e faz
 // a cabeça ser reenviada após reconexão (RF-12). O cursor registra até onde o
 // assinante confirmou cada sensor (RF-16).
+//
+// A fila é limitada (RF-36). Ao encher, a leitura mais antiga depois da cabeça
+// é descartada (a cabeça pode estar em trânsito) e a lacuna é marcada na
+// próxima leitura do mesmo sensor com GAP_BEFORE (RF-37, CE-11).
 type subscriberQueue struct {
 	mu     sync.Mutex
-	items  []*protocol.Deliver
+	q      readingQueue
+	limit  int
+	drops  uint64
 	cursor cursor
 	notify chan struct{}
 	owner  deliveryConn
 	stop   chan struct{}
 }
 
-func newSubscriberQueue() *subscriberQueue {
-	return &subscriberQueue{cursor: make(cursor), notify: make(chan struct{}, 1)}
+func newSubscriberQueue(limit int) *subscriberQueue {
+	if limit < 2 {
+		limit = DefaultSubscriberQueueLimit
+	}
+	return &subscriberQueue{
+		limit:  limit,
+		cursor: make(cursor),
+		notify: make(chan struct{}, 1),
+	}
 }
 
 func (q *subscriberQueue) signal() {
@@ -40,37 +53,43 @@ func (q *subscriberQueue) signal() {
 }
 
 // push enfileira a leitura. Uma leitura já coberta pelo cursor foi processada
-// pelo assinante e é descartada (CE-16).
-func (q *subscriberQueue) push(d *protocol.Deliver) bool {
+// pelo assinante e é descartada sem gerar lacuna (CE-16). Devolve as leituras
+// removidas por retenção, na ordem em que saíram.
+func (q *subscriberQueue) push(d *protocol.Deliver) (bool, []*protocol.Deliver) {
 	q.mu.Lock()
 	if q.cursor.covers(d.SensorID, d.Seq) {
 		q.mu.Unlock()
-		return false
+		return false, nil
 	}
-	q.items = append(q.items, d)
+	var dropped []*protocol.Deliver
+	for q.q.len() >= q.limit && q.q.len() > 1 {
+		dropped = append(dropped, q.q.dropAt(1))
+	}
+	q.q.push(d)
+	q.drops += uint64(len(dropped))
 	q.mu.Unlock()
 	q.signal()
-	return true
+	return true, dropped
 }
 
 func (q *subscriberQueue) head() *protocol.Deliver {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if len(q.items) == 0 {
+	if q.q.len() == 0 {
 		return nil
 	}
-	return q.items[0]
+	return q.q.items[0]
 }
 
 // ack confirma a cabeça. O cursor só avança depois de persist; se a
 // persistência falhar, a cabeça continua pendente e será reenviada.
 func (q *subscriberQueue) ack(a *protocol.DeliverAck, persist func() error) (bool, error) {
 	q.mu.Lock()
-	if len(q.items) == 0 {
+	if q.q.len() == 0 {
 		q.mu.Unlock()
 		return false, nil
 	}
-	h := q.items[0]
+	h := q.q.items[0]
 	if h.Topic != a.Topic || h.SensorID != a.SensorID || h.Seq != a.Seq {
 		q.mu.Unlock()
 		return false, nil
@@ -80,17 +99,21 @@ func (q *subscriberQueue) ack(a *protocol.DeliverAck, persist func() error) (boo
 		return false, err
 	}
 	q.cursor.advance(h.SensorID, h.Seq)
-	q.items[0] = nil
-	q.items = q.items[1:]
+	q.q.items[0] = nil
+	q.q.items = q.q.items[1:]
 	q.mu.Unlock()
 	q.signal()
 	return true, nil
 }
 
-func (q *subscriberQueue) restore(c cursor, items []*protocol.Deliver) {
+func (q *subscriberQueue) restore(c cursor, rq *readingQueue) {
 	q.mu.Lock()
 	q.cursor = c
-	q.items = append(q.items[:0], items...)
+	if rq != nil {
+		q.q = *rq.clone()
+	} else {
+		q.q = readingQueue{}
+	}
 	q.mu.Unlock()
 	q.signal()
 }
@@ -104,7 +127,13 @@ func (q *subscriberQueue) position() cursor {
 func (q *subscriberQueue) len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.items)
+	return q.q.len()
+}
+
+func (q *subscriberQueue) depthAndDrops() (int, uint64) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.q.len(), q.drops
 }
 
 // attach associa a fila a uma nova sessão, encerrando o laço da anterior.
@@ -158,21 +187,34 @@ func (q *subscriberQueue) run(conn deliveryConn, stop <-chan struct{}) {
 // DeliveryManager mantém uma fila por assinante (clientID). As filas existem
 // mesmo sem sessão ativa, pois inscrições sobrevivem à desconexão; a entrega
 // retoma do cursor quando o cliente reconecta. Com store em disco, o avanço
-// do cursor é gravado em disco antes de a cabeça sair da fila.
+// do cursor e os descartes por retenção são gravados antes de valerem.
 type DeliveryManager struct {
 	mu     sync.Mutex
 	queues map[string]*subscriberQueue
 	store  *store
+	limit  int
+	log    *slog.Logger
 	wg     sync.WaitGroup
 }
 
 // NewDeliveryManager cria um gerenciador apenas em memória.
 func NewDeliveryManager() *DeliveryManager {
-	return newDeliveryManager(&store{})
+	return newDeliveryManager(&store{}, nil, 0)
 }
 
-func newDeliveryManager(st *store) *DeliveryManager {
-	return &DeliveryManager{queues: make(map[string]*subscriberQueue), store: st}
+func newDeliveryManager(st *store, log *slog.Logger, limit int) *DeliveryManager {
+	if log == nil {
+		log = slog.Default()
+	}
+	if limit < 2 {
+		limit = DefaultSubscriberQueueLimit
+	}
+	return &DeliveryManager{
+		queues: make(map[string]*subscriberQueue),
+		store:  st,
+		limit:  limit,
+		log:    log,
+	}
 }
 
 func (m *DeliveryManager) queue(clientID string) *subscriberQueue {
@@ -180,16 +222,26 @@ func (m *DeliveryManager) queue(clientID string) *subscriberQueue {
 	defer m.mu.Unlock()
 	q, ok := m.queues[clientID]
 	if !ok {
-		q = newSubscriberQueue()
+		q = newSubscriberQueue(m.limit)
 		m.queues[clientID] = q
 	}
 	return q
 }
 
 // Enqueue coloca a leitura na fila do cliente e informa se ela foi aceita;
-// leitura já confirmada pelo cliente (coberta pelo cursor) é descartada.
-func (m *DeliveryManager) Enqueue(clientID string, d *protocol.Deliver) bool {
-	return m.queue(clientID).push(d)
+// leitura já confirmada pelo cliente (coberta pelo cursor) é descartada sem
+// lacuna. Cada leitura removida por retenção é persistida como descarte; se a
+// gravação falhar, o erro impede o PUBACK e o sensor reenvia.
+func (m *DeliveryManager) Enqueue(clientID string, d *protocol.Deliver) (bool, error) {
+	accepted, dropped := m.queue(clientID).push(d)
+	for _, old := range dropped {
+		if err := m.store.drop(clientID, old.SensorID, old.Seq); err != nil {
+			return accepted, err
+		}
+		m.log.Warn("leitura descartada por retencao",
+			"client_id", clientID, "sensor_id", old.SensorID, "seq", old.Seq)
+	}
+	return accepted, nil
 }
 
 // Ack confirma a cabeça da fila do cliente e avança o cursor. ACK que não
@@ -204,15 +256,36 @@ func (m *DeliveryManager) restore(st *storeState) {
 	for clientID, c := range st.cursors {
 		m.queue(clientID).restore(c.clone(), st.queues[clientID])
 	}
-	for clientID, items := range st.queues {
-		if _, ok := st.cursors[clientID]; !ok {
-			m.queue(clientID).restore(make(cursor), items)
+	for clientID, rq := range st.queues {
+		if _, ok := st.cursors[clientID]; ok {
+			continue
 		}
+		m.queue(clientID).restore(make(cursor), rq)
 	}
 }
 
 func (m *DeliveryManager) Pending(clientID string) int {
 	return m.queue(clientID).len()
+}
+
+func (m *DeliveryManager) stats() (depths map[string]int, drops map[string]uint64) {
+	m.mu.Lock()
+	queues := make(map[string]*subscriberQueue, len(m.queues))
+	for clientID, q := range m.queues {
+		queues[clientID] = q
+	}
+	m.mu.Unlock()
+
+	depths = make(map[string]int, len(queues))
+	drops = make(map[string]uint64)
+	for clientID, q := range queues {
+		depth, dropped := q.depthAndDrops()
+		depths[clientID] = depth
+		if dropped > 0 {
+			drops[clientID] = dropped
+		}
+	}
+	return depths, drops
 }
 
 func (m *DeliveryManager) attach(clientID string, conn deliveryConn) {

@@ -14,6 +14,13 @@ type Message interface {
 	decodePayload(*decoder)
 }
 
+// flagMessage é implementada pelos tipos que usam o campo flags do cabeçalho.
+// Nos demais tipos ele permanece reservado e é enviado como 0.
+type flagMessage interface {
+	headerFlags() uint16
+	setHeaderFlags(uint16)
+}
+
 func Encode(msg Message) ([]byte, error) {
 	e := &encoder{}
 	msg.encodePayload(e)
@@ -26,10 +33,15 @@ func Encode(msg Message) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %d bytes", ErrMessageTooLarge, length)
 	}
 
+	var flags uint16
+	if fm, ok := msg.(flagMessage); ok {
+		flags = fm.headerFlags()
+	}
+
 	frame := make([]byte, 0, 4+length)
 	frame = binary.BigEndian.AppendUint32(frame, uint32(length))
 	frame = append(frame, Version, byte(msg.Type()))
-	frame = binary.BigEndian.AppendUint16(frame, 0)
+	frame = binary.BigEndian.AppendUint16(frame, flags)
 	frame = append(frame, e.buf...)
 	return frame, nil
 }
@@ -54,6 +66,9 @@ func Decode(frame []byte) (Message, error) {
 	msg := newMessage(Type(frame[5]))
 	if msg == nil {
 		return nil, fmt.Errorf("%w: 0x%02x", ErrUnknownType, frame[5])
+	}
+	if fm, ok := msg.(flagMessage); ok {
+		fm.setHeaderFlags(binary.BigEndian.Uint16(frame[6:8]))
 	}
 
 	d := &decoder{buf: frame[HeaderSize:]}

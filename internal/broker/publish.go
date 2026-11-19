@@ -3,7 +3,6 @@ package broker
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -121,24 +120,12 @@ func (p *publisher) Publish(m *protocol.Publish) (PublishResult, error) {
 	}
 	for _, clientID := range subscribers {
 		cp := *d
-		p.deliveries.Enqueue(clientID, &cp)
+		if _, err := p.deliveries.Enqueue(clientID, &cp); err != nil {
+			return PublishResult{}, err
+		}
 	}
 	st.seen = true
 	st.lastSeq = m.Seq
 
 	return PublishResult{Status: protocol.StatusPersisted, Subscribers: len(subscribers)}, nil
-}
-
-func (s *session) handlePublish(log *slog.Logger, m *protocol.Publish) error {
-	res, err := s.server.publisher.Publish(m)
-	if err != nil {
-		return err
-	}
-	if err := s.write(&protocol.PubAck{Status: res.Status, Seq: m.Seq}); err != nil {
-		return err
-	}
-	log.Debug("leitura recebida",
-		"topic", m.Topic, "sensor_id", m.SensorID, "seq", m.Seq,
-		"status", res.Status.String(), "subscribers", res.Subscribers, "stale", res.Stale)
-	return nil
 }

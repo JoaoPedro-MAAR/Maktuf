@@ -40,12 +40,21 @@ const (
 	// recSensorSeq: sensor_id, seq. Último seq aceito do sensor; só aparece em
 	// compactação, para manter o descarte de reenvios após o reinício.
 	recSensorSeq storeRecordKind = 5
+	// recDrop: client_id, sensor_id, seq. Remove da fila a leitura descartada
+	// por retenção e marca a lacuna na próxima leitura do sensor (RF-37).
+	recDrop storeRecordKind = 6
+	// recGapMark: client_id, sensor_id, seq. Só aparece na compactação; marca a
+	// flag GAP_BEFORE numa leitura específica da fila.
+	recGapMark storeRecordKind = 7
+	// recGapPending: client_id, sensor_id. Só aparece na compactação; recria a
+	// lacuna pendente que ainda não foi marcada em nenhuma leitura.
+	recGapPending storeRecordKind = 8
 )
 
 // storeState é o estado do broker que sobrevive a reinício (RF-50, RNF-12).
 type storeState struct {
 	subs    map[string]map[string]struct{}
-	queues  map[string][]*protocol.Deliver
+	queues  map[string]*readingQueue
 	cursors map[string]cursor
 	sensors map[string]uint64
 }
@@ -53,10 +62,19 @@ type storeState struct {
 func newStoreState() *storeState {
 	return &storeState{
 		subs:    make(map[string]map[string]struct{}),
-		queues:  make(map[string][]*protocol.Deliver),
+		queues:  make(map[string]*readingQueue),
 		cursors: make(map[string]cursor),
 		sensors: make(map[string]uint64),
 	}
+}
+
+func (st *storeState) queue(clientID string) *readingQueue {
+	q, ok := st.queues[clientID]
+	if !ok {
+		q = &readingQueue{}
+		st.queues[clientID] = q
+	}
+	return q
 }
 
 func (st *storeState) cursor(clientID string) cursor {
@@ -90,10 +108,32 @@ func (st *storeState) apply(rec storeRecord) {
 			if st.cursor(clientID).covers(d.SensorID, d.Seq) {
 				continue
 			}
-			st.queues[clientID] = append(st.queues[clientID], d)
+			cp := *d
+			st.queue(clientID).push(&cp)
 		}
 		if d.Seq > st.sensors[d.SensorID] {
 			st.sensors[d.SensorID] = d.Seq
+		}
+	case recDrop:
+		q := st.queues[rec.client]
+		if q == nil {
+			return
+		}
+		if i := q.find(rec.sensor, rec.seq); i >= 0 {
+			q.dropAt(i)
+		}
+	case recGapMark:
+		if q := st.queues[rec.client]; q != nil {
+			if i := q.find(rec.sensor, rec.seq); i >= 0 {
+				q.items[i].Flags |= protocol.DeliverFlagGap
+			}
+		}
+	case recGapPending:
+		if q := st.queue(rec.client); q != nil {
+			if q.gaps == nil {
+				q.gaps = make(map[string]bool)
+			}
+			q.gaps[rec.sensor] = true
 		}
 	case recAck:
 		// A fila é filtrada pelo cursor só na compactação/recuperação, para
@@ -107,23 +147,16 @@ func (st *storeState) apply(rec storeRecord) {
 }
 
 // prune remove das filas as leituras já confirmadas (cobertas pelo cursor).
+// Não gera lacuna: essas leituras foram entregues e confirmadas.
 func (st *storeState) prune() {
 	for clientID, q := range st.queues {
 		c := st.cursors[clientID]
-		kept := q[:0]
-		for _, d := range q {
-			if !c.covers(d.SensorID, d.Seq) {
-				kept = append(kept, d)
-			}
-		}
-		for i := len(kept); i < len(q); i++ {
-			q[i] = nil
-		}
-		if len(kept) == 0 {
+		q.pruneRemove(func(d *protocol.Deliver) bool {
+			return c.covers(d.SensorID, d.Seq)
+		})
+		if q.len() == 0 && len(q.gaps) == 0 {
 			delete(st.queues, clientID)
-			continue
 		}
-		st.queues[clientID] = kept
 	}
 }
 
@@ -146,8 +179,17 @@ func (st *storeState) snapshot() [][]byte {
 		}
 	}
 	for _, clientID := range sortedKeys(st.queues) {
-		for _, d := range st.queues[clientID] {
+		q := st.queues[clientID]
+		for _, d := range q.items {
 			out = append(out, storeRecord{kind: recPublish, deliver: d, clients: []string{clientID}}.encode())
+		}
+		for _, d := range q.items {
+			if d.Flags&protocol.DeliverFlagGap != 0 {
+				out = append(out, storeRecord{kind: recGapMark, client: clientID, sensor: d.SensorID, seq: d.Seq}.encode())
+			}
+		}
+		for _, sensorID := range sortedKeys(q.gaps) {
+			out = append(out, storeRecord{kind: recGapPending, client: clientID, sensor: sensorID}.encode())
 		}
 	}
 	return out
@@ -218,7 +260,7 @@ func (s *store) recovered() *storeState {
 		out.subs[clientID] = cp
 	}
 	for clientID, q := range s.state.queues {
-		out.queues[clientID] = append([]*protocol.Deliver(nil), q...)
+		out.queues[clientID] = q.clone()
 	}
 	for clientID, c := range s.state.cursors {
 		out.cursors[clientID] = c.clone()
@@ -247,6 +289,13 @@ func (s *store) publish(d *protocol.Deliver, clientIDs []string) error {
 
 func (s *store) ack(clientID, sensorID string, seq uint64) error {
 	return s.write(storeRecord{kind: recAck, client: clientID, sensor: sensorID, seq: seq})
+}
+
+func (s *store) drop(clientID, sensorID string, seq uint64) error {
+	if !s.persistent() {
+		return nil
+	}
+	return s.write(storeRecord{kind: recDrop, client: clientID, sensor: sensorID, seq: seq})
 }
 
 func (s *store) write(rec storeRecord) error {
@@ -306,6 +355,12 @@ func (k storeRecordKind) String() string {
 		return "DELIVER_ACK"
 	case recSensorSeq:
 		return "SENSOR_SEQ"
+	case recDrop:
+		return "DROP"
+	case recGapMark:
+		return "GAP_MARK"
+	case recGapPending:
+		return "GAP_PENDING"
 	default:
 		return fmt.Sprintf("registro(%d)", uint8(k))
 	}
@@ -337,6 +392,13 @@ func (r storeRecord) encode() []byte {
 	case recSensorSeq:
 		buf = appendString(buf, r.sensor)
 		buf = binary.BigEndian.AppendUint64(buf, r.seq)
+	case recDrop, recGapMark:
+		buf = appendString(buf, r.client)
+		buf = appendString(buf, r.sensor)
+		buf = binary.BigEndian.AppendUint64(buf, r.seq)
+	case recGapPending:
+		buf = appendString(buf, r.client)
+		buf = appendString(buf, r.sensor)
 	}
 	return buf
 }
@@ -418,6 +480,13 @@ func decodeStoreRecord(raw []byte) (storeRecord, error) {
 	case recSensorSeq:
 		rec.sensor = r.str()
 		rec.seq = r.u64()
+	case recDrop, recGapMark:
+		rec.client = r.str()
+		rec.sensor = r.str()
+		rec.seq = r.u64()
+	case recGapPending:
+		rec.client = r.str()
+		rec.sensor = r.str()
 	default:
 		return storeRecord{}, fmt.Errorf("%w: tipo %d", errStoreRecord, rec.kind)
 	}

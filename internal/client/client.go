@@ -105,6 +105,10 @@ type Message struct {
 	Seq         uint64
 	Timestamp   time.Time
 	Temperature float32
+	// Gap indica que leituras deste sensor foram descartadas por retenção
+	// antes desta entrega (RF-37). O seq anterior conhecido do consumidor
+	// ajuda a dimensionar a lacuna.
+	Gap bool
 }
 
 const messageBuffer = 64
@@ -372,6 +376,7 @@ func (c *Client) route(msg protocol.Message) error {
 			Seq:         m.Seq,
 			Timestamp:   time.UnixMilli(m.TimestampMS).UTC(),
 			Temperature: m.Temperature,
+			Gap:         m.Flags&protocol.DeliverFlagGap != 0,
 		})
 		c.mu.Unlock()
 		select {

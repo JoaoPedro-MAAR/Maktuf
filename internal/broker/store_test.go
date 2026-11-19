@@ -36,6 +36,13 @@ func seqs(q []*protocol.Deliver) []string {
 	return out
 }
 
+func queueSeqs(q *readingQueue) []string {
+	if q == nil {
+		return nil
+	}
+	return seqs(q.items)
+}
+
 func TestStoreRecoversState(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := mustOpenStore(t, dir)
@@ -61,11 +68,11 @@ func TestStoreRecoversState(t *testing.T) {
 	if !reflect.DeepEqual(st.subs, wantSubs) {
 		t.Fatalf("subs = %v, esperado %v", st.subs, wantSubs)
 	}
-	if got := seqs(st.queues["c1"]); !reflect.DeepEqual(got, []string{"b/1", "a/2"}) {
+	if got := queueSeqs(st.queues["c1"]); !reflect.DeepEqual(got, []string{"b/1", "a/2"}) {
 		t.Fatalf("fila c1 = %v", got)
 	}
 	if _, ok := st.queues["c2"]; ok {
-		t.Fatalf("fila c2 deveria estar vazia: %v", seqs(st.queues["c2"]))
+		t.Fatalf("fila c2 deveria estar vazia: %v", queueSeqs(st.queues["c2"]))
 	}
 	if st.cursors["c1"]["a"] != 1 || st.cursors["c2"]["a"] != 2 {
 		t.Fatalf("cursores = %v", st.cursors)
@@ -83,7 +90,8 @@ func TestStoreRecoversPublishFields(t *testing.T) {
 	must(t, s.close())
 
 	_, st := mustOpenStore(t, dir)
-	if len(st.queues["c1"]) != 1 || !reflect.DeepEqual(st.queues["c1"][0], d) {
+	q := st.queues["c1"]
+	if q == nil || len(q.items) != 1 || !reflect.DeepEqual(q.items[0], d) {
 		t.Fatalf("leitura recuperada = %#v, esperado %#v", st.queues["c1"], d)
 	}
 }
@@ -98,7 +106,7 @@ func TestStoreSurvivesWithoutClose(t *testing.T) {
 	must(t, s.publish(deliver("a", 1), []string{"c1"}))
 
 	_, st := mustOpenStore(t, dir)
-	if len(st.queues["c1"]) != 1 || len(st.subs["c1"]) != 1 {
+	if st.queues["c1"].len() != 1 || len(st.subs["c1"]) != 1 {
 		t.Fatalf("estado recuperado incompleto: subs=%v fila=%v", st.subs, st.queues)
 	}
 	_ = s.close()
@@ -123,7 +131,7 @@ func TestStoreCompactionKeepsStateAndShrinksLog(t *testing.T) {
 	must(t, s.close())
 
 	_, st := mustOpenStore(t, dir)
-	if got := st.queues["c1"]; len(got) != 1 || got[0].Seq != total {
+	if got := st.queues["c1"].items; len(got) != 1 || got[0].Seq != total {
 		t.Fatalf("fila = %v, esperado so a/%d", seqs(got), total)
 	}
 	if st.cursors["c1"]["a"] != total-1 || st.sensors["a"] != total {
@@ -155,6 +163,43 @@ func TestStoreRejectsCorruptedRecord(t *testing.T) {
 	}
 }
 
+func TestStoreDropAndGapSurviveRestartAndCompaction(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := mustOpenStore(t, dir)
+	must(t, s.publish(deliver("a", 1), []string{"c1"}))
+	must(t, s.publish(deliver("a", 2), []string{"c1"}))
+	must(t, s.publish(deliver("a", 3), []string{"c1"}))
+	must(t, s.drop("c1", "a", 2))
+	must(t, s.compact())
+	must(t, s.close())
+
+	_, st := mustOpenStore(t, dir)
+	q := st.queues["c1"]
+	if q == nil {
+		t.Fatal("fila nao foi recuperada")
+	}
+	if got := seqs(q.items); !reflect.DeepEqual(got, []string{"a/1", "a/3"}) {
+		t.Fatalf("fila = %v", got)
+	}
+	if q.items[1].Flags&protocol.DeliverFlagGap == 0 {
+		t.Fatal("a leitura 3 deveria carregar a lacuna apos o reinicio")
+	}
+}
+
+func TestStorePendingGapSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := mustOpenStore(t, dir)
+	must(t, s.publish(deliver("a", 1), []string{"c1"}))
+	must(t, s.drop("c1", "a", 1))
+	must(t, s.close())
+
+	_, st := mustOpenStore(t, dir)
+	q := st.queues["c1"]
+	if q == nil || !q.gaps["a"] {
+		t.Fatalf("lacuna pendente nao recuperada: %#v", q)
+	}
+}
+
 // Sem persistência, a leitura não é enfileirada e Publish devolve erro, o que
 // impede o PUBACK (RF-13).
 func TestPublishFailsWhenStoreFails(t *testing.T) {
@@ -162,7 +207,7 @@ func TestPublishFailsWhenStoreFails(t *testing.T) {
 	s, _ := mustOpenStore(t, dir)
 	topics := NewTopicManager()
 	topics.Subscribe("c1", "sensores/a/temperatura")
-	deliveries := newDeliveryManager(s)
+	deliveries := newDeliveryManager(s, nil, 0)
 	p := newPublisher(topics, deliveries, s)
 	must(t, s.close())
 

@@ -29,10 +29,16 @@ type testBroker struct {
 
 func startBroker(t *testing.T) *testBroker {
 	t.Helper()
-	srv := broker.NewServer(broker.Config{
-		Addr:   "127.0.0.1:0",
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	return startBrokerWithConfig(t, broker.Config{})
+}
+
+func startBrokerWithConfig(t *testing.T, cfg broker.Config) *testBroker {
+	t.Helper()
+	cfg.Addr = "127.0.0.1:0"
+	if cfg.Logger == nil {
+		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	srv := broker.NewServer(cfg)
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -361,6 +367,33 @@ func TestBrokerShutdownIsReported(t *testing.T) {
 	}
 	if _, err := c.Publish(testContext(t), sensorTopic, client.Reading{SensorID: "sensor-a", Seq: 1}); !errors.Is(err, client.ErrDisconnected) {
 		t.Fatalf("Publish apos queda: esperava ErrDisconnected, obtido %v", err)
+	}
+}
+
+// RF-37 / CE-11: a lacuna marcada pelo broker chega como Message.Gap.
+func TestMessageGapIsExposed(t *testing.T) {
+	b := startBrokerWithConfig(t, broker.Config{SubscriberQueueLimit: 2})
+	consumer := connect(t, b.addr, client.RoleConsumer, "consumidor-1")
+	if err := consumer.Subscribe(testContext(t), sensorTopic); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	_ = consumer.Close()
+
+	sensor := connect(t, b.addr, client.RoleSensor, "sensor-a")
+	for seq := uint64(1); seq <= 10; seq++ {
+		if got := publish(t, sensor, sensorTopic, client.Reading{SensorID: "sensor-a", Seq: seq}); got != client.StatusPersisted {
+			t.Fatalf("seq %d: status = %s", seq, got)
+		}
+	}
+
+	consumer = connect(t, b.addr, client.RoleConsumer, "consumidor-1")
+	first := receive(t, consumer)
+	if first.Seq != 1 || first.Gap {
+		t.Fatalf("primeira mensagem = seq %d gap=%v", first.Seq, first.Gap)
+	}
+	last := receive(t, consumer)
+	if last.Seq != 10 || !last.Gap {
+		t.Fatalf("ultima mensagem = seq %d gap=%v, esperado seq 10 com lacuna", last.Seq, last.Gap)
 	}
 }
 

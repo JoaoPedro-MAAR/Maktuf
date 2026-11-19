@@ -12,16 +12,23 @@ import (
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
 )
 
-var errInvalidFilter = errors.New("broker: filtro de topico invalido")
+var (
+	errInvalidFilter = errors.New("broker: filtro de topico invalido")
+	errSessionClosed = errors.New("broker: sessao encerrada")
+)
 
 type session struct {
-	server   *Server
-	conn     net.Conn
-	reader   *bufio.Reader
-	clientID string
-	role     protocol.Role
-	writeMu  sync.Mutex
-	log      *slog.Logger
+	server    *Server
+	conn      net.Conn
+	reader    *bufio.Reader
+	clientID  string
+	role      protocol.Role
+	writeMu   sync.Mutex
+	log       *slog.Logger
+	queue     *sensorQueue
+	acks      chan *publishJob
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 func newSession(s *Server, conn net.Conn) *session {
@@ -29,11 +36,12 @@ func newSession(s *Server, conn net.Conn) *session {
 		server: s,
 		conn:   conn,
 		reader: bufio.NewReader(conn),
+		closed: make(chan struct{}),
 	}
 }
 
 func (s *session) serve(ctx context.Context) {
-	defer func() { _ = s.conn.Close() }()
+	defer func() { _ = s.close() }()
 
 	log := s.server.log.With("remote_addr", s.conn.RemoteAddr().String())
 
@@ -69,6 +77,22 @@ func (s *session) serve(ctx context.Context) {
 	deliveries := s.server.deliveries
 	deliveries.attach(s.clientID, s)
 	defer deliveries.detach(s.clientID, s)
+
+	limit := s.server.cfg.SensorQueueLimit
+	q := &sensorQueue{clientID: s.clientID, slots: make(chan struct{}, limit)}
+	s.queue = q
+	s.acks = make(chan *publishJob, limit)
+	s.server.scheduler.register(q)
+	defer func() {
+		_ = s.close()
+		s.server.scheduler.remove(q)
+	}()
+
+	s.server.wg.Add(1)
+	go func() {
+		defer s.server.wg.Done()
+		s.ackLoop()
+	}()
 
 	for {
 		select {
@@ -144,7 +168,86 @@ func (s *session) deliveryFailed(err error) {
 }
 
 func (s *session) close() error {
-	return s.conn.Close()
+	s.closeOnce.Do(func() {
+		close(s.closed)
+		_ = s.conn.Close()
+	})
+	return nil
+}
+
+// handlePublish valida e entrega a leitura ao scheduler. A sessão só bloqueia
+// quando a própria fila enche: nesse caso para de ler o socket até o ackLoop
+// liberar um slot com o PUBACK, aplicando backpressure apenas a este sensor.
+func (s *session) handlePublish(_ *slog.Logger, m *protocol.Publish) error {
+	if err := validatePublish(m); err != nil {
+		return err
+	}
+
+	select {
+	case <-s.closed:
+		return errSessionClosed
+	default:
+	}
+
+	select {
+	case s.queue.slots <- struct{}{}:
+	default:
+		s.server.scheduler.waits.Add(1)
+		select {
+		case s.queue.slots <- struct{}{}:
+		case <-s.closed:
+			return errSessionClosed
+		}
+	}
+
+	job := &publishJob{msg: m, done: make(chan publishOutcome, 1)}
+	select {
+	case s.acks <- job:
+	case <-s.closed:
+		return errSessionClosed
+	}
+	s.server.scheduler.enqueue(s.queue, job)
+	return nil
+}
+
+// ackLoop responde os PUBLISH na ordem em que foram aceitos. O slot só é
+// liberado depois que o PUBACK é escrito: um sensor que não lê as respostas
+// também fica limitado sozinho.
+func (s *session) ackLoop() {
+	for {
+		var job *publishJob
+		select {
+		case job = <-s.acks:
+		case <-s.closed:
+			return
+		}
+
+		var outcome publishOutcome
+		select {
+		case outcome = <-job.done:
+		case <-s.closed:
+			return
+		}
+
+		if outcome.err != nil {
+			s.log.Warn("falha ao processar leitura",
+				"topic", job.msg.Topic, "sensor_id", job.msg.SensorID, "seq", job.msg.Seq,
+				"error", outcome.err)
+			_ = s.close()
+			return
+		}
+
+		if err := s.write(&protocol.PubAck{Status: outcome.res.Status, Seq: job.msg.Seq}); err != nil {
+			s.log.Warn("falha ao enviar PUBACK", "error", err)
+			_ = s.close()
+			return
+		}
+		<-s.queue.slots
+
+		s.log.Debug("leitura recebida",
+			"topic", job.msg.Topic, "sensor_id", job.msg.SensorID, "seq", job.msg.Seq,
+			"status", outcome.res.Status.String(), "subscribers", outcome.res.Subscribers, "stale", outcome.res.Stale)
+	}
 }
 
 func validRole(role protocol.Role) bool {

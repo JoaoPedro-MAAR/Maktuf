@@ -38,7 +38,7 @@ func noPersist() error { return nil }
 
 // O cursor só avança com o DELIVER_ACK da cabeça.
 func TestQueueCursorAdvancesOnlyOnHeadAck(t *testing.T) {
-	q := newSubscriberQueue()
+	q := newSubscriberQueue(DefaultSubscriberQueueLimit)
 	d1, d2 := deliver("a", 1), deliver("a", 2)
 	q.push(d1)
 	q.push(d2)
@@ -61,7 +61,7 @@ func TestQueueCursorAdvancesOnlyOnHeadAck(t *testing.T) {
 }
 
 func TestQueueAckKeepsHeadWhenPersistFails(t *testing.T) {
-	q := newSubscriberQueue()
+	q := newSubscriberQueue(DefaultSubscriberQueueLimit)
 	d1 := deliver("a", 1)
 	q.push(d1)
 
@@ -79,17 +79,23 @@ func TestQueueAckKeepsHeadWhenPersistFails(t *testing.T) {
 
 // CE-16: leitura já confirmada não volta para a fila.
 func TestQueueDiscardsReadingsCoveredByCursor(t *testing.T) {
-	q := newSubscriberQueue()
+	q := newSubscriberQueue(DefaultSubscriberQueueLimit)
 	d2 := deliver("a", 2)
 	q.push(d2)
 	if ok, err := q.ack(ackFor(d2), noPersist); !ok || err != nil {
 		t.Fatalf("ack = %v, %v", ok, err)
 	}
 
-	if q.push(deliver("a", 1)) || q.push(deliver("a", 2)) {
+	if ok, _ := q.push(deliver("a", 1)); ok {
 		t.Fatal("leitura coberta pelo cursor nao deveria ser enfileirada")
 	}
-	if !q.push(deliver("a", 3)) || !q.push(deliver("b", 1)) {
+	if ok, _ := q.push(deliver("a", 2)); ok {
+		t.Fatal("leitura coberta pelo cursor nao deveria ser enfileirada")
+	}
+	if ok, _ := q.push(deliver("a", 3)); !ok {
+		t.Fatal("leituras novas deveriam ser enfileiradas")
+	}
+	if ok, _ := q.push(deliver("b", 1)); !ok {
 		t.Fatal("leituras novas deveriam ser enfileiradas")
 	}
 	if q.len() != 2 {

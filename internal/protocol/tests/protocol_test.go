@@ -53,6 +53,39 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDeliverFlagsRoundTrip(t *testing.T) {
+	want := &protocol.Deliver{
+		Topic: "sensores/a/temperatura", SensorID: "a", Seq: 9,
+		TimestampMS: 1700000000000, Temperature: 21.5,
+		Flags: protocol.DeliverFlagGap,
+	}
+	frame, err := protocol.Encode(want)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if got := binary.BigEndian.Uint16(frame[6:8]); got != protocol.DeliverFlagGap {
+		t.Fatalf("flags no quadro = 0x%04x, esperado 0x%04x", got, protocol.DeliverFlagGap)
+	}
+
+	got, err := protocol.Decode(frame)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("obtido %#v, esperado %#v", got, want)
+	}
+}
+
+func TestNonDeliverKeepsReservedFlagsZero(t *testing.T) {
+	frame, err := protocol.Encode(&protocol.PubAck{Status: protocol.StatusPersisted, Seq: 1})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if got := binary.BigEndian.Uint16(frame[6:8]); got != 0 {
+		t.Fatalf("flags = 0x%04x, esperado 0", got)
+	}
+}
+
 func TestReadMessageGlued(t *testing.T) {
 	first := &protocol.Publish{Topic: "sensores/a", SensorID: "a", Seq: 1, AgeMS: 10, Temperature: 25.5}
 	second := &protocol.Subscribe{TopicFilter: "sensores/+/temperatura"}
