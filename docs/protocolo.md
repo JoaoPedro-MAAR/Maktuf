@@ -106,8 +106,14 @@ Regras do `PUBLISH`:
 - O broker guarda o último `seq` enfileirado de cada `sensor_id`. Uma leitura
   com `seq` menor ou igual é tratada como reenvio: responde
   `PUBACK(PERSISTED, seq)` sem enfileirar de novo.
-- Estado atual: filas apenas em memória; persistência e replicação antes do
-  `PERSISTED` (DP-04) ainda não foram implementadas.
+- Antes do `PUBACK(PERSISTED, seq)` a leitura é gravada em disco (com fsync)
+  no broker, junto com a lista de inscritos para os quais foi enfileirada. Se a
+  gravação falhar, o broker encerra a conexão sem responder e o sensor reenvia.
+- O último `seq` de cada sensor também é persistido, então reenvios continuam
+  sendo reconhecidos depois de um reinício do broker.
+- Estado atual: a replicação na reserva antes do `PERSISTED` (DP-04) ainda não
+  foi implementada; hoje `PERSISTED` garante apenas a persistência no broker
+  primário.
 
 ### PUBACK
 
@@ -165,6 +171,14 @@ Regras do `DELIVER`:
   sensor.
 - Uma leitura sem `DELIVER_ACK` é reenviada quando o cliente reconecta
   (pelo menos uma vez); duplicatas são possíveis.
+- O broker mantém, por inscrito, um cursor com o último `seq` confirmado por
+  `DELIVER_ACK` de cada `sensor_id`. O cursor só avança com o `DELIVER_ACK` da
+  leitura pendente e é gravado em disco antes de a próxima leitura ser
+  enviada. Uma leitura com `seq` já coberto pelo cursor não é entregue de
+  novo.
+- Inscrições, filas e cursores sobrevivem a reinício do broker: após o
+  reinício, a entrega retoma da primeira leitura não confirmada de cada
+  inscrito, sem que ele precise refazer o `SUBSCRIBE`.
 
 ### DELIVER_ACK
 

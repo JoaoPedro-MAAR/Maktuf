@@ -46,21 +46,23 @@ type sensorState struct {
 }
 
 // publisher aplica a regra de publicação: descarta sem inscritos (RF-07),
-// enfileira para todos os inscritos (RF-08) e mantém a ordem por sensor
-// descartando seq já aceito (RF-15, CE-16).
+// persiste e enfileira para todos os inscritos (RF-08, RF-50) e mantém a ordem
+// por sensor descartando seq já aceito (RF-15, CE-16).
 type publisher struct {
 	topics     *TopicManager
 	deliveries *DeliveryManager
+	store      *store
 	now        func() time.Time
 
 	mu      sync.Mutex
 	sensors map[string]*sensorState
 }
 
-func newPublisher(topics *TopicManager, deliveries *DeliveryManager) *publisher {
+func newPublisher(topics *TopicManager, deliveries *DeliveryManager, st *store) *publisher {
 	return &publisher{
 		topics:     topics,
 		deliveries: deliveries,
+		store:      st,
 		now:        time.Now,
 		sensors:    make(map[string]*sensorState),
 	}
@@ -77,8 +79,18 @@ func (p *publisher) sensor(id string) *sensorState {
 	return st
 }
 
-// Publish valida e despacha a leitura. O lock por sensor garante que leituras
-// do mesmo sensor entram nas filas na ordem de seq sem bloquear outros sensores.
+func (p *publisher) restore(sensors map[string]uint64) {
+	for sensorID, seq := range sensors {
+		st := p.sensor(sensorID)
+		st.seen = true
+		st.lastSeq = seq
+	}
+}
+
+// Publish valida, persiste e despacha a leitura. O lock por sensor garante que
+// leituras do mesmo sensor entram nas filas na ordem de seq sem bloquear
+// outros sensores. Se a persistência falhar, a leitura não é enfileirada e o
+// erro impede o PUBACK, então o sensor mantém a leitura no buffer e reenvia.
 func (p *publisher) Publish(m *protocol.Publish) (PublishResult, error) {
 	if err := validatePublish(m); err != nil {
 		return PublishResult{}, err
@@ -97,15 +109,19 @@ func (p *publisher) Publish(m *protocol.Publish) (PublishResult, error) {
 		return PublishResult{Status: protocol.StatusNoSubscribers}, nil
 	}
 
-	timestamp := p.now().UnixMilli() - int64(m.AgeMS)
+	d := &protocol.Deliver{
+		Topic:       m.Topic,
+		SensorID:    m.SensorID,
+		Seq:         m.Seq,
+		TimestampMS: p.now().UnixMilli() - int64(m.AgeMS),
+		Temperature: m.Temperature,
+	}
+	if err := p.store.publish(d, subscribers); err != nil {
+		return PublishResult{}, err
+	}
 	for _, clientID := range subscribers {
-		p.deliveries.Enqueue(clientID, &protocol.Deliver{
-			Topic:       m.Topic,
-			SensorID:    m.SensorID,
-			Seq:         m.Seq,
-			TimestampMS: timestamp,
-			Temperature: m.Temperature,
-		})
+		cp := *d
+		p.deliveries.Enqueue(clientID, &cp)
 	}
 	st.seen = true
 	st.lastSeq = m.Seq

@@ -17,17 +17,19 @@ type deliveryConn interface {
 // subscriberQueue guarda, em ordem de chegada, as leituras pendentes de um
 // assinante. A entrega é stop-and-wait: a cabeça só sai da fila com o
 // DELIVER_ACK da mesma leitura, o que preserva a ordem por sensor (RF-15) e faz
-// a cabeça ser reenviada após reconexão (RF-12).
+// a cabeça ser reenviada após reconexão (RF-12). O cursor registra até onde o
+// assinante confirmou cada sensor (RF-16).
 type subscriberQueue struct {
 	mu     sync.Mutex
 	items  []*protocol.Deliver
+	cursor cursor
 	notify chan struct{}
 	owner  deliveryConn
 	stop   chan struct{}
 }
 
 func newSubscriberQueue() *subscriberQueue {
-	return &subscriberQueue{notify: make(chan struct{}, 1)}
+	return &subscriberQueue{cursor: make(cursor), notify: make(chan struct{}, 1)}
 }
 
 func (q *subscriberQueue) signal() {
@@ -37,11 +39,18 @@ func (q *subscriberQueue) signal() {
 	}
 }
 
-func (q *subscriberQueue) push(d *protocol.Deliver) {
+// push enfileira a leitura. Uma leitura já coberta pelo cursor foi processada
+// pelo assinante e é descartada (CE-16).
+func (q *subscriberQueue) push(d *protocol.Deliver) bool {
 	q.mu.Lock()
+	if q.cursor.covers(d.SensorID, d.Seq) {
+		q.mu.Unlock()
+		return false
+	}
 	q.items = append(q.items, d)
 	q.mu.Unlock()
 	q.signal()
+	return true
 }
 
 func (q *subscriberQueue) head() *protocol.Deliver {
@@ -53,22 +62,43 @@ func (q *subscriberQueue) head() *protocol.Deliver {
 	return q.items[0]
 }
 
-func (q *subscriberQueue) ack(a *protocol.DeliverAck) bool {
+// ack confirma a cabeça. O cursor só avança depois de persist; se a
+// persistência falhar, a cabeça continua pendente e será reenviada.
+func (q *subscriberQueue) ack(a *protocol.DeliverAck, persist func() error) (bool, error) {
 	q.mu.Lock()
 	if len(q.items) == 0 {
 		q.mu.Unlock()
-		return false
+		return false, nil
 	}
 	h := q.items[0]
 	if h.Topic != a.Topic || h.SensorID != a.SensorID || h.Seq != a.Seq {
 		q.mu.Unlock()
-		return false
+		return false, nil
 	}
+	if err := persist(); err != nil {
+		q.mu.Unlock()
+		return false, err
+	}
+	q.cursor.advance(h.SensorID, h.Seq)
 	q.items[0] = nil
 	q.items = q.items[1:]
 	q.mu.Unlock()
 	q.signal()
-	return true
+	return true, nil
+}
+
+func (q *subscriberQueue) restore(c cursor, items []*protocol.Deliver) {
+	q.mu.Lock()
+	q.cursor = c
+	q.items = append(q.items[:0], items...)
+	q.mu.Unlock()
+	q.signal()
+}
+
+func (q *subscriberQueue) position() cursor {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.cursor.clone()
 }
 
 func (q *subscriberQueue) len() int {
@@ -125,17 +155,24 @@ func (q *subscriberQueue) run(conn deliveryConn, stop <-chan struct{}) {
 	}
 }
 
-// DeliveryManager mantém uma fila em memória por assinante (clientID). As
-// filas existem mesmo sem sessão ativa, pois inscrições sobrevivem à
-// desconexão; a entrega retoma quando o cliente reconecta.
+// DeliveryManager mantém uma fila por assinante (clientID). As filas existem
+// mesmo sem sessão ativa, pois inscrições sobrevivem à desconexão; a entrega
+// retoma do cursor quando o cliente reconecta. Com store em disco, o avanço
+// do cursor é gravado em disco antes de a cabeça sair da fila.
 type DeliveryManager struct {
 	mu     sync.Mutex
 	queues map[string]*subscriberQueue
+	store  *store
 	wg     sync.WaitGroup
 }
 
+// NewDeliveryManager cria um gerenciador apenas em memória.
 func NewDeliveryManager() *DeliveryManager {
-	return &DeliveryManager{queues: make(map[string]*subscriberQueue)}
+	return newDeliveryManager(&store{})
+}
+
+func newDeliveryManager(st *store) *DeliveryManager {
+	return &DeliveryManager{queues: make(map[string]*subscriberQueue), store: st}
 }
 
 func (m *DeliveryManager) queue(clientID string) *subscriberQueue {
@@ -149,14 +186,29 @@ func (m *DeliveryManager) queue(clientID string) *subscriberQueue {
 	return q
 }
 
-func (m *DeliveryManager) Enqueue(clientID string, d *protocol.Deliver) {
-	m.queue(clientID).push(d)
+// Enqueue coloca a leitura na fila do cliente e informa se ela foi aceita;
+// leitura já confirmada pelo cliente (coberta pelo cursor) é descartada.
+func (m *DeliveryManager) Enqueue(clientID string, d *protocol.Deliver) bool {
+	return m.queue(clientID).push(d)
 }
 
-// Ack confirma a cabeça da fila do cliente. ACK que não corresponde à cabeça
-// (duplicado ou desconhecido) é ignorado.
-func (m *DeliveryManager) Ack(clientID string, a *protocol.DeliverAck) bool {
-	return m.queue(clientID).ack(a)
+// Ack confirma a cabeça da fila do cliente e avança o cursor. ACK que não
+// corresponde à cabeça (duplicado ou desconhecido) é ignorado.
+func (m *DeliveryManager) Ack(clientID string, a *protocol.DeliverAck) (bool, error) {
+	return m.queue(clientID).ack(a, func() error {
+		return m.store.ack(clientID, a.SensorID, a.Seq)
+	})
+}
+
+func (m *DeliveryManager) restore(st *storeState) {
+	for clientID, c := range st.cursors {
+		m.queue(clientID).restore(c.clone(), st.queues[clientID])
+	}
+	for clientID, items := range st.queues {
+		if _, ok := st.cursors[clientID]; !ok {
+			m.queue(clientID).restore(make(cursor), items)
+		}
+	}
 }
 
 func (m *DeliveryManager) Pending(clientID string) int {
@@ -181,8 +233,13 @@ func (m *DeliveryManager) wait() {
 	m.wg.Wait()
 }
 
-func (s *session) handleDeliverAck(log *slog.Logger, m *protocol.DeliverAck) {
-	if !s.server.deliveries.Ack(s.clientID, m) {
+func (s *session) handleDeliverAck(log *slog.Logger, m *protocol.DeliverAck) error {
+	ok, err := s.server.deliveries.Ack(s.clientID, m)
+	if err != nil {
+		return err
+	}
+	if !ok {
 		log.Debug("DELIVER_ACK ignorado", "topic", m.Topic, "sensor_id", m.SensorID, "seq", m.Seq)
 	}
+	return nil
 }

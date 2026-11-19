@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"os"
@@ -21,9 +22,13 @@ func main() {
 
 func run(logger *slog.Logger) error {
 	addr := flag.String("addr", broker.DefaultAddr, "endereco TCP do broker")
+	dataDir := flag.String("data-dir", "data/broker", "diretorio onde o broker grava seu estado em disco")
 	flag.Parse()
 
-	server := broker.NewServer(broker.Config{Addr: *addr, Logger: logger})
+	if *dataDir == "" {
+		return errors.New("-data-dir nao pode ser vazio")
+	}
+	server := broker.NewServer(broker.Config{Addr: *addr, DataDir: *dataDir, Logger: logger})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
