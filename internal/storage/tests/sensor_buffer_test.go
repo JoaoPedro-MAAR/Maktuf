@@ -2,10 +2,13 @@ package storage_test
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -363,6 +366,68 @@ func TestConcurrentAppendAndAck(t *testing.T) {
 			t.Fatalf("pendentes fora do esperado: %v", got)
 		}
 	}
+}
+
+const (
+	crashChildEnv  = "MAKTUF_BUFFER_CRASH_PATH"
+	crashChildDone = "filho-gravou"
+)
+
+// RF-23, RNF-12, CE-02: um processo morto com SIGKILL, sem Close e sem rodar
+// defers, não perde leituras pendentes nem ACKs já confirmados. O teste executa
+// o próprio binário como processo filho.
+func TestPendingSurvivesProcessKill(t *testing.T) {
+	if path := os.Getenv(crashChildEnv); path != "" {
+		crashChild(path)
+		return
+	}
+
+	path := bufferPath(t)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPendingSurvivesProcessKill$")
+	cmd.Env = append(os.Environ(), crashChildEnv+"="+path)
+	out, err := cmd.Output()
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.Success() {
+		t.Fatalf("o filho deveria morrer abruptamente; err=%v saida=%q", err, out)
+	}
+	if !strings.Contains(string(out), crashChildDone) {
+		t.Fatalf("o filho morreu antes de gravar; saida=%q", out)
+	}
+
+	b := open(t, path, 10)
+	expectPending(t, b, 1, 3, 4, 5)
+	if r := appendN(t, b, 1)[0]; r.Seq != 6 {
+		t.Fatalf("seq apos queda = %d, esperado 6", r.Seq)
+	}
+}
+
+func crashChild(path string) {
+	b, err := storage.OpenSensorBuffer(path, storage.BufferOptions{
+		MaxReadings: 10,
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		fmt.Println("erro:", err)
+		os.Exit(2)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := b.Append(t0, float32(i)); err != nil {
+			fmt.Println("erro:", err)
+			os.Exit(2)
+		}
+	}
+	if ok, err := b.Ack(2); err != nil || !ok {
+		fmt.Println("erro no ack:", ok, err)
+		os.Exit(2)
+	}
+	fmt.Println(crashChildDone)
+
+	self, err := os.FindProcess(os.Getpid())
+	if err == nil {
+		_ = self.Kill()
+	}
+	select {}
 }
 
 func TestReadingAge(t *testing.T) {
