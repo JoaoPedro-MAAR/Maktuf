@@ -245,6 +245,33 @@ func TestUnsubscribeStopsNewDeliveries(t *testing.T) {
 	expectNothingBefore(t, sensor, 2, leaving, staying)
 }
 
+// RF-10, CE-12: leituras enfileiradas antes do UNSUBSCRIBE já foram confirmadas
+// ao sensor com PERSISTED e continuam sendo entregues, em ordem; só as
+// publicadas depois do cancelamento deixam de chegar.
+func TestUnsubscribeKeepsAlreadyQueuedReadings(t *testing.T) {
+	addr := startBroker(t)
+	sensor := connect(t, addr, client.RoleSensor, "sensor-a")
+	consumer := connect(t, addr, client.RoleConsumer, "consumidor-1")
+	subscribe(t, consumer, topicA)
+	subscribe(t, consumer, controlTopic)
+
+	// O consumidor não lê o canal até o fim do cancelamento. A biblioteca só
+	// confirma o que coube no buffer do canal, então a maior parte destas
+	// leituras fica pendente na fila do broker durante o UNSUBSCRIBE.
+	const queued = 200
+	for seq := uint64(1); seq <= queued; seq++ {
+		publish(t, sensor, topicA, client.Reading{SensorID: "a", Seq: seq}, client.StatusPersisted)
+	}
+
+	unsubscribe(t, consumer, topicA)
+	publish(t, sensor, topicA, client.Reading{SensorID: "a", Seq: queued + 1}, client.StatusNoSubscribers)
+
+	for seq := uint64(1); seq <= queued; seq++ {
+		expect(t, consumer, topicA, "a", seq)
+	}
+	expectNothingBefore(t, sensor, 1, consumer)
+}
+
 // Garante que a suíte não dependa de porta fixa: dois brokers sobem lado a lado.
 func TestBrokersUseEphemeralPorts(t *testing.T) {
 	first, second := startBroker(t), startBroker(t)
