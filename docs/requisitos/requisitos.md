@@ -129,7 +129,7 @@ A prioridade segue a escala:
 | RF-07 | Essencial | Publicação em tópico sem inscritos deve ser descartada, com ciência do publicador. | O broker responde `NO_SUBSCRIBERS`; o sensor remove a leitura do buffer e registra o descarte. |
 | RF-08 | Essencial | Publicação em tópico com inscritos deve ser encaminhada a todos e então apagada. | Todos os inscritos ativos recebem a mensagem; após o enfileiramento para todos, a cópia original é removida conforme a política de retenção. |
 | RF-09 | Alta | Deve haver suporte a filtros de tópicos com curingas. | Uma inscrição em `sensores/+/temperatura` recebe leituras de qualquer sensor. |
-| RF-10 | Alta | O cancelamento de inscrição deve interromper entregas futuras e descartar mensagens ainda enfileiradas para aquele inscrito. | O consumidor não recebe mensagens após o `UNSUBSCRIBE`; os descartes são contabilizados. |
+| RF-10 | Alta | O cancelamento de inscrição deve interromper entregas futuras. Leituras já enfileiradas para aquele inscrito antes do cancelamento continuam sendo entregues, pois já foram confirmadas ao sensor com `PERSISTED`. | O consumidor não recebe leituras publicadas após o `UNSUBSCRIBE`. |
 | RF-11 | Média | Publicações simultâneas de vários sensores não devem ser bloqueadas por um único tópico. | O broker processa publicações concorrentes sem serialização global. |
 
 ### 4.2 Entrega, confiabilidade e ordenação
@@ -343,7 +343,7 @@ Cada mensagem deve possuir:
 | CE-09 | Juiz falha | Fluxo de dados continua; failover fica suspenso até o Juiz retornar. |
 | CE-10 | Consumidor lento | Sua fila cresce até o limite; demais consumidores não são afetados. |
 | CE-11 | Consumidor ultrapassa a retenção | Lacuna é explicitada; o consumidor deve ser capaz de detectar e registrar. |
-| CE-12 | Último inscrito cancela | Tópico é removido; mensagens enfileiradas para ele são descartadas. |
+| CE-12 | Último inscrito cancela | Tópico é removido; novas publicações recebem `NO_SUBSCRIBERS`; leituras já enfileiradas antes do cancelamento continuam sendo entregues. |
 | CE-13 | Novo inscrito em tópico recém-criado | Recebe apenas mensagens publicadas após a inscrição. |
 | CE-14 | Sensor envia leitura com idade muito alta | Broker aceita, calcula timestamp e entrega com a idade original. |
 | CE-15 | Mensagem duplicada chega ao consumidor | Consumidor descarta com base em `sensor_id + seq`. |
