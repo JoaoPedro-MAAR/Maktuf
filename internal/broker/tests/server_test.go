@@ -29,10 +29,16 @@ type testServer struct {
 
 func startServer(t *testing.T) *testServer {
 	t.Helper()
+	return startServerWithDataDir(t, "")
+}
+
+func startServerWithDataDir(t *testing.T, dataDir string) *testServer {
+	t.Helper()
 
 	srv := broker.NewServer(broker.Config{
-		Addr:   "127.0.0.1:0",
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Addr:    "127.0.0.1:0",
+		DataDir: dataDir,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("listen: %v", err)

@@ -91,7 +91,7 @@ func (s *session) serve(ctx context.Context) {
 		case *protocol.Publish:
 			err = s.handlePublish(log, m)
 		case *protocol.DeliverAck:
-			s.handleDeliverAck(log, m)
+			err = s.handleDeliverAck(log, m)
 		default:
 			log.Debug("mensagem recebida (nao tratada)", "type", msg.Type().String())
 		}
@@ -106,6 +106,9 @@ func (s *session) handleSubscribe(log *slog.Logger, m *protocol.Subscribe) error
 	if !ValidFilter(m.TopicFilter) {
 		return fmt.Errorf("%w: %q", errInvalidFilter, m.TopicFilter)
 	}
+	if err := s.server.store.subscribe(s.clientID, m.TopicFilter); err != nil {
+		return err
+	}
 	created := s.server.topics.Subscribe(s.clientID, m.TopicFilter)
 	if err := s.write(&protocol.SubAck{Status: protocol.StatusOK}); err != nil {
 		return err
@@ -117,6 +120,9 @@ func (s *session) handleSubscribe(log *slog.Logger, m *protocol.Subscribe) error
 func (s *session) handleUnsubscribe(log *slog.Logger, m *protocol.Unsubscribe) error {
 	if !ValidFilter(m.TopicFilter) {
 		return fmt.Errorf("%w: %q", errInvalidFilter, m.TopicFilter)
+	}
+	if err := s.server.store.unsubscribe(s.clientID, m.TopicFilter); err != nil {
+		return err
 	}
 	removed := s.server.topics.Unsubscribe(s.clientID, m.TopicFilter)
 	if err := s.write(&protocol.UnsubAck{Status: protocol.StatusOK}); err != nil {
