@@ -2,6 +2,18 @@ package broker
 
 import "github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
 
+// statusStreamPrefix separa o fluxo de status do fluxo de leituras no cursor e
+// nas lacunas. O status tem seq próprio e não pode avançar o cursor de leituras
+// do mesmo sensor.
+const statusStreamPrefix = "\x00status\x00"
+
+func streamKey(d *protocol.Deliver) string {
+	if d.Status != protocol.SensorStateUnknown {
+		return statusStreamPrefix + d.SensorID
+	}
+	return d.SensorID
+}
+
 // readingQueue é a fila de leituras pendentes de um assinante, compartilhada
 // pela memória do broker e pelo estado do store para que a recuperação
 // reproduza exatamente o mesmo conteúdo. A fila é FIFO e a cabeça (items[0])
@@ -18,9 +30,9 @@ type readingQueue struct {
 
 func (q *readingQueue) len() int { return len(q.items) }
 
-func (q *readingQueue) find(sensorID string, seq uint64) int {
+func (q *readingQueue) find(stream string, seq uint64) int {
 	for i, d := range q.items {
-		if d.SensorID == sensorID && d.Seq == seq {
+		if streamKey(d) == stream && d.Seq == seq {
 			return i
 		}
 	}
@@ -29,9 +41,10 @@ func (q *readingQueue) find(sensorID string, seq uint64) int {
 
 // push empilha a leitura, aplicando a lacuna pendente do sensor.
 func (q *readingQueue) push(d *protocol.Deliver) {
-	if q.gaps[d.SensorID] {
+	key := streamKey(d)
+	if q.gaps[key] {
 		d.Flags |= protocol.DeliverFlagGap
-		delete(q.gaps, d.SensorID)
+		delete(q.gaps, key)
 	}
 	q.items = append(q.items, d)
 }
@@ -45,13 +58,13 @@ func (q *readingQueue) dropAt(i int) *protocol.Deliver {
 	copy(q.items[i:], q.items[i+1:])
 	q.items[len(q.items)-1] = nil
 	q.items = q.items[:len(q.items)-1]
-	q.markGap(d.SensorID, i)
+	q.markGap(streamKey(d), i)
 	return d
 }
 
-func (q *readingQueue) markGap(sensorID string, from int) {
+func (q *readingQueue) markGap(stream string, from int) {
 	for i := from; i < len(q.items); i++ {
-		if q.items[i].SensorID == sensorID {
+		if streamKey(q.items[i]) == stream {
 			q.items[i].Flags |= protocol.DeliverFlagGap
 			return
 		}
@@ -59,7 +72,7 @@ func (q *readingQueue) markGap(sensorID string, from int) {
 	if q.gaps == nil {
 		q.gaps = make(map[string]bool)
 	}
-	q.gaps[sensorID] = true
+	q.gaps[stream] = true
 }
 
 // pruneRemove remove as leituras cobertas pelo cursor sem gerar lacuna: elas

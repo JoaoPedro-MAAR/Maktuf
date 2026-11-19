@@ -69,6 +69,15 @@ const (
 	StatusTemporaryFailure = protocol.StatusTemporaryFailure
 )
 
+type SensorState = protocol.SensorState
+
+const (
+	SensorStateUnknown  = protocol.SensorStateUnknown
+	SensorStateOnline   = protocol.SensorStateOnline
+	SensorStateDormindo = protocol.SensorStateDormindo
+	SensorStateOffline  = protocol.SensorStateOffline
+)
+
 var (
 	// ErrClosed indica que Close foi chamado.
 	ErrClosed = errors.New("client: cliente fechado")
@@ -109,6 +118,10 @@ type Message struct {
 	// antes desta entrega (RF-37). O seq anterior conhecido do consumidor
 	// ajuda a dimensionar a lacuna.
 	Gap bool
+	// Status diferente de SensorStateUnknown marca uma transição de estado
+	// publicada no tópico sensores/{id}/status (RF-21). Nesse caso Temperature
+	// não tem significado.
+	Status SensorState
 }
 
 const messageBuffer = 64
@@ -261,6 +274,24 @@ func (c *Client) Publish(ctx context.Context, topic string, r Reading) (Status, 
 	return msg.(*protocol.PubAck).Status, nil
 }
 
+// Sleep avisa o broker que o sensor ficará fora por duration. O SLEEP não tem
+// resposta no protocolo; o broker marca o sensor como DORMINDO.
+func (c *Client) Sleep(ctx context.Context, duration time.Duration) error {
+	if duration < 0 || duration.Milliseconds() > math.MaxUint32 {
+		return fmt.Errorf("%w: duracao %s fora do intervalo", ErrInvalidArgument, duration)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if err := c.Err(); err != nil {
+		return err
+	}
+	return c.writeLocked(ctx, &protocol.Sleep{DurationMS: uint32(duration.Milliseconds())})
+}
+
 // Subscribe registra o filtro e aguarda o SUBACK. Inscrições sobrevivem à
 // desconexão no broker e só são removidas por Unsubscribe.
 func (c *Client) Subscribe(ctx context.Context, filter string) error {
@@ -377,6 +408,7 @@ func (c *Client) route(msg protocol.Message) error {
 			Timestamp:   time.UnixMilli(m.TimestampMS).UTC(),
 			Temperature: m.Temperature,
 			Gap:         m.Flags&protocol.DeliverFlagGap != 0,
+			Status:      m.Status,
 		})
 		c.mu.Unlock()
 		select {

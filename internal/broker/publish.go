@@ -13,6 +13,7 @@ import (
 var (
 	errInvalidTopic    = errors.New("broker: topico de publicacao invalido")
 	errInvalidSensorID = errors.New("broker: sensor_id vazio")
+	errInvalidStatus   = errors.New("broker: status de sensor invalido")
 )
 
 // ValidTopic aceita apenas tópicos concretos: mesmas regras de ValidFilter,
@@ -128,4 +129,35 @@ func (p *publisher) Publish(m *protocol.Publish) (PublishResult, error) {
 	st.lastSeq = m.Seq
 
 	return PublishResult{Status: protocol.StatusPersisted, Subscribers: len(subscribers)}, nil
+}
+
+// PublishStatus enfileira uma transição de estado gerada pelo próprio broker.
+// O status usa o mesmo store e as mesmas filas do assinante, mas não passa pela
+// deduplicação de leituras: o seq do status é um fluxo separado do seq do
+// sensor (RF-21, RF-27 a RF-29).
+func (p *publisher) PublishStatus(d *protocol.Deliver) (int, error) {
+	if !ValidTopic(d.Topic) {
+		return 0, fmt.Errorf("%w: %q", errInvalidTopic, d.Topic)
+	}
+	if d.SensorID == "" {
+		return 0, errInvalidSensorID
+	}
+	if d.Status == protocol.SensorStateUnknown {
+		return 0, errInvalidStatus
+	}
+
+	subscribers := p.topics.Subscribers(d.Topic)
+	if len(subscribers) == 0 {
+		return 0, nil
+	}
+	if err := p.store.publish(d, subscribers); err != nil {
+		return 0, err
+	}
+	for _, clientID := range subscribers {
+		cp := *d
+		if _, err := p.deliveries.Enqueue(clientID, &cp); err != nil {
+			return 0, err
+		}
+	}
+	return len(subscribers), nil
 }

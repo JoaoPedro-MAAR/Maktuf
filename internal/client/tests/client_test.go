@@ -397,6 +397,33 @@ func TestMessageGapIsExposed(t *testing.T) {
 	}
 }
 
+// RF-21 / RF-27 / RF-28: o cliente entrega online, dormindo e offline com o
+// estado preenchido e envia SLEEP pelo método Sleep.
+func TestStatusLifecycleExposedByClient(t *testing.T) {
+	b := startBrokerWithConfig(t, broker.Config{
+		StatusTolerance:    50 * time.Millisecond,
+		StatusScanInterval: 5 * time.Millisecond,
+	})
+	consumer := connect(t, b.addr, client.RoleConsumer, "consumidor-1")
+	if err := consumer.Subscribe(testContext(t), "sensores/+/status"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	sensor := connect(t, b.addr, client.RoleSensor, "sensor-a")
+
+	if msg := receive(t, consumer); msg.Status != client.SensorStateOnline {
+		t.Fatalf("status = %s, esperado online", msg.Status)
+	}
+	if err := sensor.Sleep(testContext(t), 50*time.Millisecond); err != nil {
+		t.Fatalf("Sleep: %v", err)
+	}
+	if msg := receive(t, consumer); msg.Status != client.SensorStateDormindo {
+		t.Fatalf("status = %s, esperado dormindo", msg.Status)
+	}
+	if msg := receive(t, consumer); msg.Status != client.SensorStateOffline {
+		t.Fatalf("status = %s, esperado offline", msg.Status)
+	}
+}
+
 func TestInvalidFilterFailsPendingCall(t *testing.T) {
 	b := startBroker(t)
 	c := connect(t, b.addr, client.RoleConsumer, "consumidor-1")

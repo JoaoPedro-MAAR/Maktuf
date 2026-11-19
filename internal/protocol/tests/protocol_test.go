@@ -24,6 +24,7 @@ func samples() []protocol.Message {
 		&protocol.Unsubscribe{TopicFilter: "sensores/+/temperatura"},
 		&protocol.UnsubAck{Status: protocol.StatusOK},
 		&protocol.Deliver{Topic: "sensores/a/temperatura", SensorID: "a", Seq: 1, TimestampMS: 1700000000000, Temperature: 25.5},
+		&protocol.Deliver{Topic: "sensores/a/status", SensorID: "a", Seq: 2, TimestampMS: 1700000000001, Status: protocol.SensorStateDormindo},
 		&protocol.DeliverAck{Topic: "sensores/a/temperatura", SensorID: "a", Seq: 1},
 		&protocol.Sleep{DurationMS: 60000},
 		&protocol.Heartbeat{BrokerID: "broker-1", State: 1, LastSeq: 42},

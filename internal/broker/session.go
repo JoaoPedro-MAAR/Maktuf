@@ -74,6 +74,10 @@ func (s *session) serve(ctx context.Context) {
 	s.log = log
 	log.Info("cliente conectado")
 
+	if connect.Role == protocol.RoleSensor {
+		s.server.status.online(s.clientID)
+	}
+
 	deliveries := s.server.deliveries
 	deliveries.attach(s.clientID, s)
 	defer deliveries.detach(s.clientID, s)
@@ -116,6 +120,8 @@ func (s *session) serve(ctx context.Context) {
 			err = s.handlePublish(log, m)
 		case *protocol.DeliverAck:
 			err = s.handleDeliverAck(log, m)
+		case *protocol.Sleep:
+			err = s.handleSleep(log, m)
 		default:
 			log.Debug("mensagem recebida (nao tratada)", "type", msg.Type().String())
 		}

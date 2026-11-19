@@ -3,7 +3,7 @@ package protocol
 import "errors"
 
 const (
-	Version uint8 = 1
+	Version uint8 = 2
 
 	MaxMessageSize = 1 << 20
 
@@ -86,6 +86,32 @@ func (s Status) String() string {
 		return "NO_SUBSCRIBERS"
 	case StatusTemporaryFailure:
 		return "TEMPORARY_FAILURE"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// SensorState é o estado publicado no tópico sensores/{id}/status (RF-21). O
+// valor zero marca uma leitura comum, que não carrega estado.
+type SensorState uint8
+
+const (
+	SensorStateUnknown  SensorState = 0
+	SensorStateOnline   SensorState = 1
+	SensorStateDormindo SensorState = 2
+	SensorStateOffline  SensorState = 3
+)
+
+func (s SensorState) String() string {
+	switch s {
+	case SensorStateUnknown:
+		return "UNKNOWN"
+	case SensorStateOnline:
+		return "online"
+	case SensorStateDormindo:
+		return "dormindo"
+	case SensorStateOffline:
+		return "offline"
 	default:
 		return "UNKNOWN"
 	}

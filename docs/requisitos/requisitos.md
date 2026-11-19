@@ -447,9 +447,14 @@ As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
 2. A exclusão da mensagem deve ocorrer após o enfileiramento para todos os inscritos ou somente após o ACK de todos os consumidores?
 3. Qual é o comportamento esperado quando um consumidor fica offline além do limite de retenção: descartar, bloquear o publicador ou notificar a aplicação?
 4. O tópico de status deve seguir as mesmas regras de ciclo de vida dos tópicos de leitura?
+   **Resolvido:** sim. É criado por inscrição, removido sem inscritos e não faz
+   replay; transição sem inscritos é descartada.
 5. Qual é o limite máximo de tamanho de mensagem e de buffer por sensor?
 6. O Juiz deve ser replicado para eliminar o ponto único de falha na coordenação?
 7. A garantia "pelo menos uma vez" se aplica também a mensagens de status ou apenas às leituras de temperatura?
+   **Resolvido:** aplica-se também às transições de status. Elas usam o mesmo
+   store e as mesmas filas/cursor dos assinantes, com um fluxo de `seq` separado
+   do fluxo de leituras do sensor.
 8. Qual é o nível mínimo de documentação da API da biblioteca exigido na Etapa 2?
 
 ---

@@ -186,6 +186,33 @@ func TestStoreDropAndGapSurviveRestartAndCompaction(t *testing.T) {
 	}
 }
 
+func TestStoreStatusPersistsInSeparateStream(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := mustOpenStore(t, dir)
+	must(t, s.publish(deliver("a", 5), []string{"c1"}))
+	status := &protocol.Deliver{
+		Topic: statusTopic("a"), SensorID: "a", Seq: 99,
+		Status: protocol.SensorStateDormindo,
+	}
+	must(t, s.publish(status, []string{"c1"}))
+	must(t, s.close())
+
+	_, st := mustOpenStore(t, dir)
+	q := st.queues["c1"]
+	if q == nil || len(q.items) != 2 {
+		t.Fatalf("fila recuperada = %#v", q)
+	}
+	if q.items[1].Status != protocol.SensorStateDormindo {
+		t.Fatalf("status recuperado = %s", q.items[1].Status)
+	}
+	if st.sensors["a"] != 5 {
+		t.Fatalf("seq de status avancou o sensor de leitura: %v", st.sensors)
+	}
+	if st.cursors["c1"]["a"] != 0 {
+		t.Fatalf("cursor de leitura nao deveria existir: %v", st.cursors)
+	}
+}
+
 func TestStorePendingGapSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := mustOpenStore(t, dir)

@@ -140,7 +140,11 @@ type Deliver struct {
 	Seq         uint64
 	TimestampMS int64
 	Temperature float32
-	Flags       uint16
+	// Status diferente de SensorStateUnknown transforma a entrega em uma
+	// transição de estado do tópico sensores/{id}/status. Nesse caso
+	// Temperature não tem significado.
+	Status SensorState
+	Flags  uint16
 }
 
 func (*Deliver) Type() Type { return TypeDeliver }
@@ -155,6 +159,7 @@ func (m *Deliver) encodePayload(e *encoder) {
 	e.u64(m.Seq)
 	e.i64(m.TimestampMS)
 	e.f32(m.Temperature)
+	e.u8(uint8(m.Status))
 }
 
 func (m *Deliver) decodePayload(d *decoder) {
@@ -163,6 +168,7 @@ func (m *Deliver) decodePayload(d *decoder) {
 	m.Seq = d.u64()
 	m.TimestampMS = d.i64()
 	m.Temperature = d.f32()
+	m.Status = SensorState(d.u8())
 }
 
 type DeliverAck struct {

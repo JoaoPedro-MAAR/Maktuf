@@ -105,13 +105,15 @@ func (st *storeState) apply(rec storeRecord) {
 	case recPublish:
 		d := rec.deliver
 		for _, clientID := range rec.clients {
-			if st.cursor(clientID).covers(d.SensorID, d.Seq) {
+			if st.cursor(clientID).covers(streamKey(d), d.Seq) {
 				continue
 			}
 			cp := *d
 			st.queue(clientID).push(&cp)
 		}
-		if d.Seq > st.sensors[d.SensorID] {
+		// O seq de status é próprio; não pode avançar o último seq de leitura
+		// do mesmo sensor.
+		if d.Status == protocol.SensorStateUnknown && d.Seq > st.sensors[d.SensorID] {
 			st.sensors[d.SensorID] = d.Seq
 		}
 	case recDrop:
@@ -152,7 +154,7 @@ func (st *storeState) prune() {
 	for clientID, q := range st.queues {
 		c := st.cursors[clientID]
 		q.pruneRemove(func(d *protocol.Deliver) bool {
-			return c.covers(d.SensorID, d.Seq)
+			return c.covers(streamKey(d), d.Seq)
 		})
 		if q.len() == 0 && len(q.gaps) == 0 {
 			delete(st.queues, clientID)
@@ -185,7 +187,7 @@ func (st *storeState) snapshot() [][]byte {
 		}
 		for _, d := range q.items {
 			if d.Flags&protocol.DeliverFlagGap != 0 {
-				out = append(out, storeRecord{kind: recGapMark, client: clientID, sensor: d.SensorID, seq: d.Seq}.encode())
+				out = append(out, storeRecord{kind: recGapMark, client: clientID, sensor: streamKey(d), seq: d.Seq}.encode())
 			}
 		}
 		for _, sensorID := range sortedKeys(q.gaps) {
@@ -385,6 +387,9 @@ func (r storeRecord) encode() []byte {
 		for _, c := range r.clients {
 			buf = appendString(buf, c)
 		}
+		// Campo opcional no fim: registros antigos (sem status) continuam
+		// decodificando como leitura.
+		buf = append(buf, byte(d.Status))
 	case recAck:
 		buf = appendString(buf, r.client)
 		buf = appendString(buf, r.sensor)
@@ -471,6 +476,9 @@ func decodeStoreRecord(raw []byte) (storeRecord, error) {
 		n := int(r.u16())
 		for i := 0; i < n && r.err == nil; i++ {
 			rec.clients = append(rec.clients, r.str())
+		}
+		if r.err == nil && len(r.b) > 0 {
+			d.Status = protocol.SensorState(r.take(1)[0])
 		}
 		rec.deliver = d
 	case recAck:

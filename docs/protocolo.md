@@ -25,7 +25,8 @@ corpo.
 - `flags` é reservado e enviado como `0`, exceto no `DELIVER`, que usa o bit
   `0x0001` (`GAP_BEFORE`). Os demais bits continuam reservados e devem ser
   ignorados na recepção.
-- `version` atual: `1`.
+- `version` atual: `2`. A versão 2 adicionou o campo `status` ao payload do
+  `DELIVER`; mensagens com versão diferente são rejeitadas.
 
 O leitor deve usar `bufio.Reader` e `io.ReadFull`: o primeiro guarda bytes
 excedentes para a próxima leitura, o segundo espera até completar exatamente N
@@ -49,7 +50,7 @@ bytes. Isso resolve, respectivamente, mensagens coladas e leituras parciais.
 - Um `length` acima do limite é rejeitado antes de alocar memória.
 - Mensagem com `length` inconsistente com o tamanho recebido é truncada.
 - Payload com bytes sobrando é rejeitado (`ErrTrailingBytes`).
-- Versão diferente de `1` é rejeitada (`ErrUnsupportedVersion`).
+- Versão diferente de `2` é rejeitada (`ErrUnsupportedVersion`).
 
 ## 4. Tipos de mensagem
 
@@ -166,6 +167,7 @@ Regras do `topic_filter`:
 | `seq` | `uint64` |
 | `timestamp_ms` | `int64` |
 | `temperature` | `float32` |
+| `status` | `uint8` (`0` = leitura; `1` online; `2` dormindo; `3` offline) |
 
 Regras do `DELIVER`:
 
@@ -199,6 +201,17 @@ Regras do `DELIVER`:
 - O descarte por retenção pode remover uma leitura que o sensor já recebeu como
   `PERSISTED`. Essa tensão com a garantia "pelo menos uma vez" está registrada
   em [`ressalvas.md`](ressalvas.md).
+- `status != 0` identifica uma transição de estado publicada pelo broker no
+  tópico `sensores/{id}/status` (RF-21). Nesse caso `temperature` não tem
+  significado e deve ser ignorada. O `seq` do status é gerado pelo broker e
+  pertence a um fluxo separado do `seq` das leituras do mesmo sensor; os dois
+  não interferem no cursor de entrega.
+- As transições de status têm a mesma garantia at-least-once das leituras:
+  passam pelo store e pela fila do assinante, sobrevivem a reinício e também
+  podem gerar `GAP_BEFORE` se a retenção do assinante for excedida.
+- O tópico de status segue as mesmas regras de ciclo de vida dos tópicos de
+  leitura: é criado por inscrição, removido quando o último inscrito cancela e
+  não faz replay para novos inscritos. Transição sem inscritos é descartada.
 
 ### DELIVER_ACK
 
@@ -216,6 +229,19 @@ desconhecido) é ignorado e não encerra a sessão.
 | Campo | Tipo |
 |---|---|
 | `duration_ms` | `uint32` |
+
+Regras do `SLEEP`:
+
+- O broker marca o sensor como `dormindo` e publica a transição no tópico
+  `sensores/{id}/status`.
+- O prazo de retorno é `agora + duration_ms + tolerância`. A tolerância é
+  configurável no broker.
+- Se o prazo expirar sem novo contato, o monitor publica `offline` (RF-28,
+  CE-05). Uma nova conexão válida publica `online` e cancela o prazo pendente
+  (RF-29, CE-06).
+- O `SLEEP` não tem resposta no protocolo.
+- Queda de conexão sem `SLEEP` não marca `offline` nesta versão; a decisão está
+  registrada em [`ressalvas.md`](ressalvas.md).
 
 ### HEARTBEAT
 
@@ -266,7 +292,7 @@ tópico `"sensores/a"`:
 
 ```
 00 00 00 23         length = 35
-01                  version = 1
+02                  version = 2
 03                  type = PUBLISH
 00 00               flags
 0A 73 65 6E 73 6F 72 65 73 2F 61   "sensores/a"

@@ -44,3 +44,36 @@ fila do assinante é 2.
 
 A retenção é feita apenas por tamanho. A expiração por tempo prevista no RF-39
 ("o tempo de retenção deve ser configurável") ainda não foi implementada.
+
+## Estado e prazos de status não sobrevivem ao reinício
+
+O `statusManager` mantém estado e prazo de sono apenas em memória. As mensagens
+de status já publicadas e enfileiradas para assinantes são persistidas pelo
+mesmo store das leituras e sobrevivem ao reinício, mas o prazo de um sensor que
+estava `dormindo` é perdido.
+
+Consequência: se o broker reiniciar enquanto um sensor dorme, o `offline` pode
+não ser publicado no prazo original. O sensor será marcado `online` quando
+reconectar; se não reconectar, o estado pode ficar indefinidamente sem
+`offline` até um novo `SLEEP` ou contato.
+
+## Queda sem SLEEP não marca OFFLINE
+
+Por decisão de escopo da task 009, apenas o prazo de `SLEEP` gera `offline`.
+Uma conexão que cai sem `SLEEP` mantém o último estado conhecido (`online`).
+Isso diverge do glossário de `requisitos.md`, que define OFFLINE também como
+sensor que perdeu conexão.
+
+## ONLINE é republicado a cada conexão válida
+
+Toda conexão válida de sensor publica `online`, mesmo que o estado anterior já
+fosse `online`. Isso atende ao RF-29 literalmente, mas pode gerar transições
+repetidas para sensores que reconectam com frequência.
+
+## Status compartilha a retenção do assinante
+
+As transições de status usam a mesma fila limitada das leituras. Um assinante
+muito lento pode perder transições de status por retenção; nesse caso a lacuna
+é sinalizada com `GAP_BEFORE`, como nas leituras, e não há recuperação do
+estado intermediário perdido. O `seq` de status é gerado pelo broker em um
+fluxo separado e não deve ser comparado com o `seq` de leituras do sensor.

@@ -25,6 +25,8 @@ func run(logger *slog.Logger) error {
 	dataDir := flag.String("data-dir", "data/broker", "diretorio onde o broker grava seu estado em disco")
 	sensorQueue := flag.Int("sensor-queue", broker.DefaultSensorQueueLimit, "PUBLISH sem PUBACK permitidos por sensor")
 	subscriberQueue := flag.Int("subscriber-queue", broker.DefaultSubscriberQueueLimit, "retencao de leituras por assinante")
+	statusTolerance := flag.Duration("status-tolerance", broker.DefaultStatusTolerance, "tolerancia somada ao prazo do SLEEP")
+	statusScan := flag.Duration("status-scan", broker.DefaultStatusScanInterval, "intervalo do monitor de prazos de sono")
 	flag.Parse()
 
 	if *dataDir == "" {
@@ -35,6 +37,8 @@ func run(logger *slog.Logger) error {
 		DataDir:              *dataDir,
 		SensorQueueLimit:     *sensorQueue,
 		SubscriberQueueLimit: *subscriberQueue,
+		StatusTolerance:      *statusTolerance,
+		StatusScanInterval:   *statusScan,
 		Logger:               logger,
 	})
 

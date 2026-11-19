@@ -34,7 +34,7 @@ func ackFor(d *protocol.Deliver) *protocol.DeliverAck {
 	return &protocol.DeliverAck{Topic: d.Topic, SensorID: d.SensorID, Seq: d.Seq}
 }
 
-func noPersist() error { return nil }
+func noPersist(string) error { return nil }
 
 // O cursor só avança com o DELIVER_ACK da cabeça.
 func TestQueueCursorAdvancesOnlyOnHeadAck(t *testing.T) {
@@ -66,7 +66,7 @@ func TestQueueAckKeepsHeadWhenPersistFails(t *testing.T) {
 	q.push(d1)
 
 	boom := errors.New("disco cheio")
-	if ok, err := q.ack(ackFor(d1), func() error { return boom }); ok || !errors.Is(err, boom) {
+	if ok, err := q.ack(ackFor(d1), func(string) error { return boom }); ok || !errors.Is(err, boom) {
 		t.Fatalf("ack = %v, %v; esperado false, %v", ok, err, boom)
 	}
 	if q.head() != d1 {

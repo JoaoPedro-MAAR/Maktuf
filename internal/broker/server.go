@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 )
 
 const (
@@ -35,7 +36,13 @@ type Config struct {
 	// SubscriberQueueLimit é a retenção de cada assinante. Valores <= 0 usam
 	// DefaultSubscriberQueueLimit; 1 é inválido (a cabeça é preservada).
 	SubscriberQueueLimit int
-	Logger               *slog.Logger
+	// StatusTolerance é somada à duração do SLEEP antes de marcar OFFLINE.
+	// Valores <= 0 usam DefaultStatusTolerance.
+	StatusTolerance time.Duration
+	// StatusScanInterval é o período do monitor de prazos de sono. Valores <= 0
+	// usam DefaultStatusScanInterval.
+	StatusScanInterval time.Duration
+	Logger             *slog.Logger
 }
 
 // QueueStats expõe profundidade e descartes das filas para métricas e testes.
@@ -56,6 +63,8 @@ type Server struct {
 	deliveries *DeliveryManager
 	publisher  *publisher
 	scheduler  *scheduler
+	status     *statusManager
+	monitor    *monitor
 	store      *store
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
@@ -74,10 +83,17 @@ func NewServer(cfg Config) *Server {
 	if cfg.SubscriberQueueLimit <= 0 {
 		cfg.SubscriberQueueLimit = DefaultSubscriberQueueLimit
 	}
+	if cfg.StatusTolerance <= 0 {
+		cfg.StatusTolerance = DefaultStatusTolerance
+	}
+	if cfg.StatusScanInterval <= 0 {
+		cfg.StatusScanInterval = DefaultStatusScanInterval
+	}
 	st := &store{}
 	topics := NewTopicManager()
 	deliveries := newDeliveryManager(st, cfg.Logger, cfg.SubscriberQueueLimit)
 	pub := newPublisher(topics, deliveries, st)
+	status := newStatusManager(cfg.StatusTolerance, pub.PublishStatus, cfg.Logger)
 	return &Server{
 		cfg:        cfg,
 		log:        cfg.Logger,
@@ -86,6 +102,8 @@ func NewServer(cfg Config) *Server {
 		deliveries: deliveries,
 		publisher:  pub,
 		scheduler:  newScheduler(pub.Publish),
+		status:     status,
+		monitor:    newMonitor(status, cfg.StatusScanInterval),
 		store:      st,
 	}
 }
@@ -168,6 +186,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	s.scheduler.start()
+	s.monitor.start()
 	s.log.Info("broker escutando", "addr", s.listener.Addr().String())
 
 	for {
@@ -201,6 +220,7 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) shutdown() error {
 	s.wg.Wait()
 	s.scheduler.close()
+	s.monitor.close()
 	s.deliveries.wait()
 	return s.store.close()
 }

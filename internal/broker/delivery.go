@@ -57,7 +57,7 @@ func (q *subscriberQueue) signal() {
 // removidas por retenção, na ordem em que saíram.
 func (q *subscriberQueue) push(d *protocol.Deliver) (bool, []*protocol.Deliver) {
 	q.mu.Lock()
-	if q.cursor.covers(d.SensorID, d.Seq) {
+	if q.cursor.covers(streamKey(d), d.Seq) {
 		q.mu.Unlock()
 		return false, nil
 	}
@@ -83,7 +83,7 @@ func (q *subscriberQueue) head() *protocol.Deliver {
 
 // ack confirma a cabeça. O cursor só avança depois de persist; se a
 // persistência falhar, a cabeça continua pendente e será reenviada.
-func (q *subscriberQueue) ack(a *protocol.DeliverAck, persist func() error) (bool, error) {
+func (q *subscriberQueue) ack(a *protocol.DeliverAck, persist func(stream string) error) (bool, error) {
 	q.mu.Lock()
 	if q.q.len() == 0 {
 		q.mu.Unlock()
@@ -94,11 +94,12 @@ func (q *subscriberQueue) ack(a *protocol.DeliverAck, persist func() error) (boo
 		q.mu.Unlock()
 		return false, nil
 	}
-	if err := persist(); err != nil {
+	stream := streamKey(h)
+	if err := persist(stream); err != nil {
 		q.mu.Unlock()
 		return false, err
 	}
-	q.cursor.advance(h.SensorID, h.Seq)
+	q.cursor.advance(stream, h.Seq)
 	q.q.items[0] = nil
 	q.q.items = q.q.items[1:]
 	q.mu.Unlock()
@@ -235,7 +236,7 @@ func (m *DeliveryManager) queue(clientID string) *subscriberQueue {
 func (m *DeliveryManager) Enqueue(clientID string, d *protocol.Deliver) (bool, error) {
 	accepted, dropped := m.queue(clientID).push(d)
 	for _, old := range dropped {
-		if err := m.store.drop(clientID, old.SensorID, old.Seq); err != nil {
+		if err := m.store.drop(clientID, streamKey(old), old.Seq); err != nil {
 			return accepted, err
 		}
 		m.log.Warn("leitura descartada por retencao",
@@ -247,8 +248,8 @@ func (m *DeliveryManager) Enqueue(clientID string, d *protocol.Deliver) (bool, e
 // Ack confirma a cabeça da fila do cliente e avança o cursor. ACK que não
 // corresponde à cabeça (duplicado ou desconhecido) é ignorado.
 func (m *DeliveryManager) Ack(clientID string, a *protocol.DeliverAck) (bool, error) {
-	return m.queue(clientID).ack(a, func() error {
-		return m.store.ack(clientID, a.SensorID, a.Seq)
+	return m.queue(clientID).ack(a, func(stream string) error {
+		return m.store.ack(clientID, stream, a.Seq)
 	})
 }
 
