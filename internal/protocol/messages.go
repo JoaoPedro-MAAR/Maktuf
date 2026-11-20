@@ -205,9 +205,11 @@ func (m *Sleep) decodePayload(d *decoder) {
 	m.DurationMS = d.u32()
 }
 
+// Heartbeat vai do broker ao Juiz e volta como eco do Juiz (BrokerID =
+// JudgeID). LastSeq é o índice de replicação do broker.
 type Heartbeat struct {
 	BrokerID string
-	State    uint8
+	State    BrokerState
 	LastSeq  uint64
 }
 
@@ -215,13 +217,13 @@ func (*Heartbeat) Type() Type { return TypeHeartbeat }
 
 func (m *Heartbeat) encodePayload(e *encoder) {
 	e.str(m.BrokerID)
-	e.u8(m.State)
+	e.u8(uint8(m.State))
 	e.u64(m.LastSeq)
 }
 
 func (m *Heartbeat) decodePayload(d *decoder) {
 	m.BrokerID = d.str()
-	m.State = d.u8()
+	m.State = BrokerState(d.u8())
 	m.LastSeq = d.u64()
 }
 

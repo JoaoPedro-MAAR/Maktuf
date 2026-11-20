@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
 )
@@ -31,6 +32,19 @@ type Replica struct {
 	conn     net.Conn
 	lastDone chan struct{}
 	wg       sync.WaitGroup
+
+	// synced fica verdadeiro depois de um SYNC_END aplicado e só volta a
+	// falso num novo SYNC_START ou numa falha ao aplicar. A queda da conexão
+	// não o altera: é o estado que permite a promoção quando o primário cai.
+	synced    atomic.Bool
+	applied   atomic.Uint64
+	connected atomic.Int32
+}
+
+// Status informa se a reserva está sincronizada, o índice do último registro
+// aplicado e se há conexão de replicação aberta com o primário.
+func (r *Replica) Status() (synced bool, applied uint64, connected bool) {
+	return r.synced.Load(), r.applied.Load(), r.connected.Load() > 0
 }
 
 // Listen abre o endereço de replicação da reserva.
@@ -92,6 +106,8 @@ func (r *Replica) serve() {
 }
 
 func (r *Replica) handle(conn net.Conn) {
+	r.connected.Add(1)
+	defer r.connected.Add(-1)
 	defer func() { _ = conn.Close() }()
 	log := r.log.With("primary_addr", conn.RemoteAddr().String())
 	reader := bufio.NewReader(conn)
@@ -115,6 +131,7 @@ func (r *Replica) handle(conn net.Conn) {
 		switch m.Kind {
 		case protocol.ReplicaSyncStart:
 			syncing, pending = true, nil
+			r.synced.Store(false)
 			continue
 		case protocol.ReplicaRecord:
 			if syncing {
@@ -129,6 +146,9 @@ func (r *Replica) handle(conn net.Conn) {
 			if err := r.target.Apply(m.Record); err != nil {
 				log.Error("falha ao aplicar registro replicado", "index", m.Index, "error", err)
 				status = protocol.StatusTemporaryFailure
+				r.synced.Store(false)
+			} else {
+				r.applied.Store(m.Index)
 			}
 		case protocol.ReplicaSyncEnd:
 			switch {
@@ -140,7 +160,9 @@ func (r *Replica) handle(conn net.Conn) {
 					log.Error("falha ao aplicar sincronizacao", "index", m.Index, "error", err)
 					status = protocol.StatusTemporaryFailure
 				} else {
-					log.Info("reserva sincronizada pelo primario", "records", len(pending))
+					r.applied.Store(m.Index)
+					r.synced.Store(true)
+					log.Info("reserva sincronizada pelo primario", "records", len(pending), "index", m.Index)
 				}
 			}
 			syncing, pending = false, nil

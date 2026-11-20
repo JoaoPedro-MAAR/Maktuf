@@ -224,7 +224,7 @@ type store struct {
 }
 
 type replicator interface {
-	Replicate(record []byte)
+	Replicate(record []byte) error
 }
 
 // openStore abre o store em dir e devolve o estado recuperado. dir vazio
@@ -320,7 +320,11 @@ func (s *store) write(rec storeRecord) error {
 	}
 	s.state.apply(rec)
 	if s.replicator != nil {
-		s.replicator.Replicate(raw)
+		if err := s.replicator.Replicate(raw); err != nil {
+			// O registro já está no disco local e contado no índice de
+			// replicação; só a confirmação ao cliente é negada.
+			return fmt.Errorf("broker: replicar %s: %w", rec.kind, err)
+		}
 	}
 	return s.maybeCompactLocked()
 }

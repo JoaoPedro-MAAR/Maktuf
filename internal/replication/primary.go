@@ -54,6 +54,16 @@ type PrimaryConfig struct {
 	RetryInitial time.Duration
 	RetryLimit   time.Duration
 	Logger       *slog.Logger
+
+	// ConfirmAlone, quando presente, é chamado para cada registro gravado com
+	// a reserva dessincronizada, com o índice do registro. Um erro impede a
+	// confirmação ao cliente: é como o primário só segue sozinho com o aval
+	// do Juiz (task 012). Nil segue sozinho sem perguntar.
+	ConfirmAlone func(index uint64) error
+	// OnChange, quando presente, é chamado quando a reserva sincroniza ou
+	// dessincroniza. Roda com locks internos; não pode bloquear nem chamar
+	// métodos do Primary além de Synced.
+	OnChange func()
 }
 
 // Primary mantém a conexão do primário com a reserva. A conexão só existe
@@ -66,8 +76,13 @@ type Primary struct {
 	mu     sync.Mutex
 	conn   net.Conn
 	reader *bufio.Reader
-	index  uint64
 	closed bool
+
+	// index é o índice de replicação: avança a cada registro gravado, com
+	// ou sem reserva, e começa no relógio para crescer entre reinícios. A
+	// reserva sincronizada tem o mesmo índice; o Juiz compara os dois. Só é
+	// escrito sob mu (e sob o lock do store).
+	index atomic.Uint64
 
 	synced  atomic.Bool
 	desyncs atomic.Uint64
@@ -93,12 +108,25 @@ func NewPrimary(cfg PrimaryConfig) *Primary {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &Primary{
+	p := &Primary{
 		cfg:  cfg,
 		log:  cfg.Logger.With("replica_addr", cfg.Addr),
 		wake: make(chan struct{}, 1),
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
+	}
+	p.index.Store(uint64(time.Now().UnixNano()))
+	return p
+}
+
+// Index devolve o índice do último registro gravado no primário.
+func (p *Primary) Index() uint64 {
+	return p.index.Load()
+}
+
+func (p *Primary) changed() {
+	if p.cfg.OnChange != nil {
+		p.cfg.OnChange()
 	}
 }
 
@@ -125,20 +153,28 @@ func (p *Primary) Desyncs() uint64 {
 
 // Replicate envia um registro já gravado no primário e espera o REPLICA_ACK.
 // Deve ser chamado com o lock de escrita do store, o que mantém na reserva a
-// mesma ordem de registros do primário. Com a reserva dessincronizada, não
-// faz nada; se a reserva falhar ou estourar o timeout, ela é marcada como
-// dessincronizada e o primário segue sozinho.
-func (p *Primary) Replicate(record []byte) {
+// mesma ordem de registros do primário. Se a reserva falhar ou estourar o
+// timeout, ela é marcada como dessincronizada. Sem reserva sincronizada, o
+// registro só é confirmado com o aval de ConfirmAlone; o erro dela é
+// devolvido e impede a confirmação ao cliente.
+func (p *Primary) Replicate(record []byte) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.conn == nil {
-		return
-	}
-	p.index++
-	msg := &protocol.Replica{Kind: protocol.ReplicaRecord, Index: p.index, Record: record}
-	if err := p.roundTripLocked(msg); err != nil {
+	index := p.index.Add(1)
+	if p.conn != nil {
+		msg := &protocol.Replica{Kind: protocol.ReplicaRecord, Index: index, Record: record}
+		err := p.roundTripLocked(msg)
+		if err == nil {
+			p.mu.Unlock()
+			return nil
+		}
 		p.desyncLocked(err)
 	}
+	p.mu.Unlock()
+
+	if p.cfg.ConfirmAlone != nil {
+		return p.cfg.ConfirmAlone(index)
+	}
+	return nil
 }
 
 func (p *Primary) roundTripLocked(msg *protocol.Replica) error {
@@ -175,7 +211,8 @@ func (p *Primary) desyncLocked(err error) {
 	p.reader = nil
 	p.synced.Store(false)
 	p.desyncs.Add(1)
-	p.log.Warn("reserva dessincronizada: primario segue sozinho", "error", err)
+	p.log.Warn("reserva dessincronizada", "error", err)
+	p.changed()
 	select {
 	case p.wake <- struct{}{}:
 	default:
@@ -226,8 +263,8 @@ func (p *Primary) connect() error {
 			return errClosed
 		}
 		count = len(records)
-		p.index++
-		if err := sendSync(conn, p.index, records, p.cfg.Timeout); err != nil {
+		index := p.index.Load()
+		if err := sendSync(conn, index, records, p.cfg.Timeout); err != nil {
 			return err
 		}
 		p.conn = conn
@@ -235,7 +272,7 @@ func (p *Primary) connect() error {
 		if err := conn.SetReadDeadline(time.Now().Add(p.cfg.Timeout)); err != nil {
 			return err
 		}
-		if err := p.readAckLocked(protocol.ReplicaSyncEnd, p.index); err != nil {
+		if err := p.readAckLocked(protocol.ReplicaSyncEnd, index); err != nil {
 			p.conn, p.reader = nil, nil
 			return err
 		}
@@ -246,7 +283,8 @@ func (p *Primary) connect() error {
 		_ = conn.Close()
 		return err
 	}
-	p.log.Info("reserva sincronizada", "records", count)
+	p.log.Info("reserva sincronizada", "records", count, "index", p.index.Load())
+	p.changed()
 	return nil
 }
 

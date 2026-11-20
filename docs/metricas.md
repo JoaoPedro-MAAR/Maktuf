@@ -33,6 +33,8 @@ biblioteca padrão.
 | `active_sensors` | gauge | `state` (`online`/`dormindo`/`offline`) | Sensores conhecidos em cada estado |
 | `replica_synced` | gauge | — | 1 com a reserva sincronizada, 0 caso contrário |
 | `replica_desyncs_total` | counter | — | Vezes em que a reserva saiu de sincronia |
+| `broker_state` | gauge | — | Estado anunciado ao Juiz: 1 primário, 2 reserva sincronizada, 3 reserva sincronizando, 4 isolado |
+| `judge_connected` | gauge | — | 1 quando o Juiz respondeu dentro do prazo de isolamento |
 
 A `ack_latency_seconds` inclui a espera por backpressure, a gravação em disco e
 a confirmação da réplica. A `delivery_latency_seconds` não inclui rede nem
@@ -75,6 +77,19 @@ por overflow de perda por retenção (RF-31, RNF-13).
 A `end_to_end_latency_seconds` inclui o tempo que a leitura ficou no buffer do
 sensor. Por isso tem nome diferente da `delivery_latency_seconds` do broker.
 
+## Juiz
+
+`go run ./cmd/juiz -metrics-addr 127.0.0.1:9103`
+
+| Métrica | Tipo | Rótulos | Quando muda |
+|---|---|---|---|
+| `failover_duration_seconds` | histogram | — | Da detecção do primário sem heartbeat até a reserva promovida anunciar estado primário |
+| `judge_promotions_total` | counter | `broker_id` | PROMOTE enviado para promover uma reserva (repetido a cada rodada enquanto ela não assume) |
+| `judge_broker_state` | gauge | `broker_id` | Último `state` de cada broker; 0 sem heartbeat dentro do prazo de falha |
+
+A `failover_duration_seconds` mede só a parte coordenada pelo Juiz. O RTO
+completo (RNF-06) soma o prazo de falha e a reconexão dos clientes (task 013).
+
 ## Histogramas e percentis
 
 Cada histograma é exposto no formato padrão (`_bucket`, `_sum`, `_count`),
@@ -87,9 +102,3 @@ do bucket, a mesma regra do `histogram_quantile`. A precisão é limitada pela
 largura do bucket. Os limites padrão são 1 ms, 2,5 ms, 5 ms, 10 ms, 25 ms,
 50 ms, 100 ms, 250 ms, 500 ms, 1 s, 2,5 s, 5 s, 10 s, 30 s, 60 s, 5 min, 15 min
 e 1 h. Um percentil acima do maior limite aparece como 3600.
-
-## Pendências
-
-- `failover_duration_seconds` (seção 9) ainda não é registrada: depende do Juiz
-  e da promoção (tasks 012 e 013). O pacote já suporta a métrica, que é um
-  histograma comum.
