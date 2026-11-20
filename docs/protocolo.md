@@ -25,8 +25,10 @@ corpo.
 - `flags` é reservado e enviado como `0`, exceto no `DELIVER`, que usa o bit
   `0x0001` (`GAP_BEFORE`). Os demais bits continuam reservados e devem ser
   ignorados na recepção.
-- `version` atual: `2`. A versão 2 adicionou o campo `status` ao payload do
-  `DELIVER`; mensagens com versão diferente são rejeitadas.
+- `version` atual: `3`. A versão 2 adicionou o campo `status` ao payload do
+  `DELIVER`; a versão 3 trocou o payload de `REPLICA` e `REPLICA_ACK` pelo envio
+  do registro do store (seção 9). Mensagens com versão diferente são
+  rejeitadas.
 
 O leitor deve usar `bufio.Reader` e `io.ReadFull`: o primeiro guarda bytes
 excedentes para a próxima leitura, o segundo espera até completar exatamente N
@@ -43,6 +45,7 @@ bytes. Isso resolve, respectivamente, mensagens coladas e leituras parciais.
 | `int64` | 8 bytes big-endian (complemento de dois) |
 | `float32` | 4 bytes big-endian (IEEE 754) |
 | `string` | `uint16` com o tamanho + bytes UTF-8 (máximo 65535 bytes) |
+| `bytes` | `uint32` com o tamanho + bytes opacos (limitado pelo `MaxMessageSize`) |
 
 ## 3. Limites e validações
 
@@ -50,7 +53,7 @@ bytes. Isso resolve, respectivamente, mensagens coladas e leituras parciais.
 - Um `length` acima do limite é rejeitado antes de alocar memória.
 - Mensagem com `length` inconsistente com o tamanho recebido é truncada.
 - Payload com bytes sobrando é rejeitado (`ErrTrailingBytes`).
-- Versão diferente de `2` é rejeitada (`ErrUnsupportedVersion`).
+- Versão diferente de `3` é rejeitada (`ErrUnsupportedVersion`).
 
 ## 4. Tipos de mensagem
 
@@ -87,6 +90,10 @@ bytes. Isso resolve, respectivamente, mensagens coladas e leituras parciais.
 |---|---|
 | `status` | `uint8` |
 
+Um broker no papel de reserva responde `CONNACK(TEMPORARY_FAILURE)` a qualquer
+`CONNECT` e encerra a conexão: ele não atende clientes enquanto não for
+promovido (seção 9).
+
 ### PUBLISH
 
 | Campo | Tipo |
@@ -112,15 +119,15 @@ Regras do `PUBLISH`:
 - Antes do `PUBACK(PERSISTED, seq)` a leitura é gravada em disco (com fsync)
   no broker, junto com a lista de inscritos para os quais foi enfileirada. Se a
   gravação falhar, o broker encerra a conexão sem responder e o sensor reenvia.
+- Com a reserva sincronizada, o `PUBACK(PERSISTED, seq)` só é enviado depois
+  do `REPLICA_ACK` da reserva para o registro da leitura (DP-04, seção 9). Com
+  a reserva dessincronizada, o primário confirma apenas com o próprio disco.
 - O último `seq` de cada sensor também é persistido, então reenvios continuam
   sendo reconhecidos depois de um reinício do broker.
 - Cada sessão de sensor tem uma fila limitada de `PUBLISH` aceitos e ainda sem
   `PUBACK`. Quando ela enche, o broker para de ler o socket daquele sensor até
   que o `PUBACK` libere espaço (backpressure). Nenhum `PUBACK` é emitido nesse
   meio-tempo e os outros sensores continuam sendo atendidos (DP-06).
-- Estado atual: a replicação na reserva antes do `PERSISTED` (DP-04) ainda não
-  foi implementada; hoje `PERSISTED` garante apenas a persistência no broker
-  primário.
 
 ### PUBACK
 
@@ -148,6 +155,8 @@ Regras do `topic_filter`:
 - O tópico (identificado pelo filtro) é criado na primeira inscrição e removido
   quando o último inscrito cancela. Inscrições sobrevivem à desconexão do
   cliente e só são removidas por `UNSUBSCRIBE`.
+- `SUBSCRIBE` e `UNSUBSCRIBE` são gravados em disco e, com a reserva
+  sincronizada, replicados antes do `SUBACK`/`UNSUBACK` (seção 9).
 - `UNSUBSCRIBE` afeta apenas leituras publicadas depois dele. Leituras que já
   estavam na fila do inscrito continuam sendo entregues, pois o broker já as
   confirmou ao sensor com `PERSISTED` (garantia "pelo menos uma vez").
@@ -253,22 +262,34 @@ Regras do `SLEEP`:
 
 ### REPLICA
 
-O payload depende de `kind`:
+Enviado pelo primário na conexão de replicação. O payload depende de `kind`:
 
-| `kind` | Conteúdo |
-|---|---|
-| `1` leitura | `topic:string`, `sensor_id:string`, `seq:uint64`, `timestamp_ms:int64`, `temperature:float32` |
-| `2` inscrição | `client_id:string`, `topic_filter:string` |
-| `3` cancelamento | `client_id:string`, `topic_filter:string` |
+| `kind` | Nome | Conteúdo |
+|---|---|---|
+| `4` | `RECORD` | `index:uint64`, `record:bytes` |
+| `5` | `SYNC_START` | `index:uint64` |
+| `6` | `SYNC_END` | `index:uint64` |
+
+- `record` é um registro do store do broker exatamente como o primário o
+  gravou em disco (inscrição, cancelamento, leitura com a lista de inscritos e
+  o `status`, cursor de `DELIVER_ACK`, descarte por retenção e marcas de
+  lacuna). O formato do registro é interno ao broker e não faz parte do
+  protocolo de clientes.
+- `index` identifica o pedido e é devolvido no `REPLICA_ACK`.
+- Os `kind` `1` (leitura), `2` (inscrição) e `3` (cancelamento) da versão 2
+  foram removidos e são rejeitados (`ErrUnknownReplicaKind`).
 
 ### REPLICA_ACK
 
 | Campo | Tipo |
 |---|---|
-| `status` | `uint8` |
-| `kind` | `uint8` |
-| leitura | `sensor_id:string`, `seq:uint64` |
-| inscrição/cancelamento | `client_id:string`, `topic_filter:string` |
+| `status` | `uint8` (`OK` ou `TEMPORARY_FAILURE`) |
+| `kind` | `uint8` (`4` ou `6`) |
+| `index` | `uint64` |
+
+A reserva responde a cada `RECORD` fora de sincronização e ao `SYNC_END`,
+somente depois de gravar em disco (com fsync). `TEMPORARY_FAILURE` indica que
+a reserva não conseguiu gravar; o primário trata como falha da reserva.
 
 ### PROMOTE
 
@@ -281,7 +302,7 @@ O payload depende de `kind`:
 | Valor | Nome | Uso |
 |---|---|---|
 | `0` | `OK` | Operação aceita |
-| `1` | `PERSISTED` | Leitura persistida e replicada |
+| `1` | `PERSISTED` | Leitura persistida (e replicada, com a reserva sincronizada) |
 | `2` | `NO_SUBSCRIBERS` | Leitura descartada por não haver inscritos |
 | `3` | `TEMPORARY_FAILURE` | Falha temporária; cliente deve manter no buffer |
 
@@ -292,7 +313,7 @@ tópico `"sensores/a"`:
 
 ```
 00 00 00 23         length = 35
-02                  version = 2
+03                  version = 3
 03                  type = PUBLISH
 00 00               flags
 0A 73 65 6E 73 6F 72 65 73 2F 61   "sensores/a"
@@ -306,3 +327,58 @@ tópico `"sensores/a"`:
 
 Alterações incompatíveis no payload devem incrementar `version`. O receptor
 rejeita versões que não conhece, permitindo evoluir o protocolo sem ambiguidade.
+
+## 9. Replicação primário → reserva
+
+O par replicado tem um broker primário, que atende clientes, e uma reserva, que
+só recebe a replicação (DP-12). A conexão de replicação é TCP, aberta pelo
+primário para o endereço de replicação da reserva, e usa este mesmo
+enquadramento.
+
+### Sincronização
+
+Ao conectar (na primeira vez e a cada reconexão), o primário envia o estado
+completo do seu store:
+
+```
+SYNC_START(i) → RECORD(i, r1) → … → RECORD(i, rn) → SYNC_END(i)
+                                         ← REPLICA_ACK(SYNC_END, i)
+```
+
+- Durante a sincronização a reserva não responde aos `RECORD`; ela acumula os
+  registros e, no `SYNC_END`, substitui todo o estado anterior por eles,
+  gravando em disco antes do `REPLICA_ACK`.
+- Nenhum registro novo é gravado no primário enquanto a sincronização está em
+  andamento; por isso o estado enviado é consistente.
+- Só depois do `REPLICA_ACK(SYNC_END)` a reserva passa a ser considerada
+  **sincronizada**.
+
+### Replicação contínua
+
+Com a reserva sincronizada, cada registro gravado no store do primário é
+replicado na mesma ordem, um de cada vez:
+
+1. o primário grava o registro no próprio disco (fsync);
+2. envia `RECORD(index, registro)` e espera `REPLICA_ACK(RECORD, index)`;
+3. só então conclui a operação e responde ao cliente (`PUBACK(PERSISTED)`,
+   `SUBACK` ou `UNSUBACK`) ou enfileira a leitura para os inscritos.
+
+A ordem por sensor (RNF-11) é preservada porque os registros são replicados na
+ordem em que foram gravados no primário.
+
+### Reserva indisponível
+
+Se a reserva não responder dentro do timeout configurado, responder
+`TEMPORARY_FAILURE` ou a conexão cair, o primário:
+
+- marca a reserva como **dessincronizada** e registra o evento em log;
+- conclui a operação em andamento e as seguintes apenas com o próprio disco
+  (modo degradado: `PERSISTED` deixa de implicar cópia na reserva);
+- tenta reconectar com backoff e, ao conseguir, refaz a sincronização
+  completa.
+
+Uma reserva dessincronizada não deve ser promovida: ela não tem as leituras
+aceitas enquanto estava fora. O estado de sincronização fica exposto no
+primário para o Juiz (task 012). As consequências do modo degradado estão em
+[`ressalvas.md`](ressalvas.md).
+

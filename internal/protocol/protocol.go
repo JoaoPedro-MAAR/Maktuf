@@ -3,7 +3,7 @@ package protocol
 import "errors"
 
 const (
-	Version uint8 = 2
+	Version uint8 = 3
 
 	MaxMessageSize = 1 << 20
 
@@ -135,22 +135,31 @@ func (r Role) String() string {
 	}
 }
 
+// ReplicaKind identifica o conteúdo de um REPLICA. Os valores 1 a 3 (leitura,
+// inscrição e cancelamento da versão 2) foram substituídos pelo envio do
+// registro do store e não são mais aceitos.
 type ReplicaKind uint8
 
 const (
-	ReplicaReading      ReplicaKind = 1
-	ReplicaSubscription ReplicaKind = 2
-	ReplicaUnsubscribe  ReplicaKind = 3
+	// ReplicaRecord carrega um registro do store do primário, já gravado em
+	// disco, para a reserva gravar e aplicar no próprio store.
+	ReplicaRecord ReplicaKind = 4
+	// ReplicaSyncStart abre uma sincronização completa: a reserva descarta o
+	// estado anterior e acumula os registros seguintes.
+	ReplicaSyncStart ReplicaKind = 5
+	// ReplicaSyncEnd fecha a sincronização: a reserva grava o estado acumulado
+	// e só então responde REPLICA_ACK.
+	ReplicaSyncEnd ReplicaKind = 6
 )
 
 func (k ReplicaKind) String() string {
 	switch k {
-	case ReplicaReading:
-		return "READING"
-	case ReplicaSubscription:
-		return "SUBSCRIPTION"
-	case ReplicaUnsubscribe:
-		return "UNSUBSCRIBE"
+	case ReplicaRecord:
+		return "RECORD"
+	case ReplicaSyncStart:
+		return "SYNC_START"
+	case ReplicaSyncEnd:
+		return "SYNC_END"
 	default:
 		return "UNKNOWN"
 	}

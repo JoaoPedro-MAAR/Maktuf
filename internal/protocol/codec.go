@@ -195,6 +195,16 @@ func (e *encoder) f32(v float32) {
 	e.u32(math.Float32bits(v))
 }
 
+// bytes grava um bloco opaco com tamanho uint32; o limite efetivo é o
+// MaxMessageSize do quadro.
+func (e *encoder) bytes(b []byte) {
+	if e.err != nil {
+		return
+	}
+	e.u32(uint32(len(b)))
+	e.buf = append(e.buf, b...)
+}
+
 func (e *encoder) str(s string) {
 	if e.err != nil {
 		return
@@ -285,6 +295,21 @@ func (d *decoder) str() string {
 	s := string(d.buf[d.off : d.off+int(n)])
 	d.off += int(n)
 	return s
+}
+
+func (d *decoder) bytes() []byte {
+	n := d.u32()
+	if d.err != nil {
+		return nil
+	}
+	if uint64(d.off)+uint64(n) > uint64(len(d.buf)) {
+		d.err = ErrTruncated
+		return nil
+	}
+	b := make([]byte, n)
+	copy(b, d.buf[d.off:])
+	d.off += int(n)
+	return b
 }
 
 func (d *decoder) done() error {

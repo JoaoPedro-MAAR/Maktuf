@@ -28,11 +28,12 @@ func samples() []protocol.Message {
 		&protocol.DeliverAck{Topic: "sensores/a/temperatura", SensorID: "a", Seq: 1},
 		&protocol.Sleep{DurationMS: 60000},
 		&protocol.Heartbeat{BrokerID: "broker-1", State: 1, LastSeq: 42},
-		&protocol.Replica{Kind: protocol.ReplicaReading, Topic: "sensores/a/temperatura", SensorID: "a", Seq: 1, TimestampMS: 1700000000000, Temperature: 25.5},
-		&protocol.Replica{Kind: protocol.ReplicaSubscription, ClientID: "consumer-1", TopicFilter: "sensores/+/temperatura"},
-		&protocol.Replica{Kind: protocol.ReplicaUnsubscribe, ClientID: "consumer-1", TopicFilter: "sensores/+/temperatura"},
-		&protocol.ReplicaAck{Status: protocol.StatusOK, Kind: protocol.ReplicaReading, SensorID: "a", Seq: 1},
-		&protocol.ReplicaAck{Status: protocol.StatusOK, Kind: protocol.ReplicaSubscription, ClientID: "consumer-1", TopicFilter: "sensores/+/temperatura"},
+		&protocol.Replica{Kind: protocol.ReplicaRecord, Index: 7, Record: []byte{3, 0, 1, 'a'}},
+		&protocol.Replica{Kind: protocol.ReplicaRecord, Index: 8, Record: []byte{}},
+		&protocol.Replica{Kind: protocol.ReplicaSyncStart, Index: 9},
+		&protocol.Replica{Kind: protocol.ReplicaSyncEnd, Index: 9},
+		&protocol.ReplicaAck{Status: protocol.StatusOK, Kind: protocol.ReplicaRecord, Index: 7},
+		&protocol.ReplicaAck{Status: protocol.StatusTemporaryFailure, Kind: protocol.ReplicaSyncEnd, Index: 9},
 		&protocol.Promote{BrokerID: "broker-2"},
 	}
 }
@@ -229,4 +230,31 @@ func FuzzDecode(f *testing.F) {
 	f.Fuzz(func(_ *testing.T, data []byte) {
 		_, _ = protocol.Decode(data)
 	})
+}
+
+// Os kinds 1 a 3 da versão 2 (leitura, inscrição e cancelamento) foram
+// substituídos pelo envio do registro do store e passam a ser recusados.
+func TestReplicaRejectsRemovedKinds(t *testing.T) {
+	for kind := uint8(1); kind <= 3; kind++ {
+		frame := []byte{0, 0, 0, 5, protocol.Version, byte(protocol.TypeReplica), 0, 0, kind}
+		if _, err := protocol.Decode(frame); !errors.Is(err, protocol.ErrUnknownReplicaKind) {
+			t.Fatalf("kind %d: erro = %v, esperado %v", kind, err, protocol.ErrUnknownReplicaKind)
+		}
+	}
+	if _, err := protocol.Encode(&protocol.Replica{Kind: 1}); !errors.Is(err, protocol.ErrUnknownReplicaKind) {
+		t.Fatalf("Encode kind 1: erro = %v", err)
+	}
+}
+
+func TestReplicaRecordTruncated(t *testing.T) {
+	frame, err := protocol.Encode(&protocol.Replica{Kind: protocol.ReplicaRecord, Index: 1, Record: []byte{1, 2, 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Corta o último byte do registro e ajusta o length do quadro.
+	frame = frame[:len(frame)-1]
+	binary.BigEndian.PutUint32(frame, uint32(len(frame)-4))
+	if _, err := protocol.Decode(frame); !errors.Is(err, protocol.ErrTruncated) {
+		t.Fatalf("erro = %v, esperado %v", err, protocol.ErrTruncated)
+	}
 }

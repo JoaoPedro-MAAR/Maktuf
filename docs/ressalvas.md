@@ -77,3 +77,60 @@ muito lento pode perder transições de status por retenção; nesse caso a lacu
 é sinalizada com `GAP_BEFORE`, como nas leituras, e não há recuperação do
 estado intermediário perdido. O `seq` de status é gerado pelo broker em um
 fluxo separado e não deve ser comparado com o `seq` de leituras do sensor.
+
+## Replicação vai além de "leituras e inscrições"
+
+O diagrama de componentes e o cenário 3 do diagrama de sequência do
+[Etapa 0 e 1](requisitos/Etapa%200%20e%201.md) descrevem a replicação de
+"leituras e inscrições". A task 011 replica o **registro completo do store**
+do primário: além de leituras e inscrições, também o cursor de `DELIVER_ACK`,
+os descartes por retenção, as marcas de lacuna, o último `seq` de cada sensor e
+as transições de status (com o campo `status`).
+
+Motivo: o `REPLICA` da versão 2 não levava a lista de inscritos nem o `status`
+das transições; replicar só a leitura faria uma transição `offline` chegar ao
+consumidor como leitura de temperatura depois do failover. Com o registro
+completo, a reserva fica idêntica ao primário e o consumidor não recebe de novo
+leituras que já confirmou (o documento previa duplicatas nesse caso, o que
+continua permitido pelo RNF-10).
+
+Custo: o protocolo passou para a versão 3, e cada `DELIVER_ACK` também espera
+o `REPLICA_ACK` antes de liberar a próxima entrega.
+
+## RPO = 0 só com a reserva sincronizada (modo degradado)
+
+O DP-04, o RF-41 e o diagrama de sequência do Etapa 0 e 1 dizem que o ACK ao
+sensor só sai depois da confirmação da réplica. Para que a queda da **reserva**
+não pare o sistema (o que tornaria a reserva um segundo ponto de falha), o
+primário segue sozinho quando a reserva cai ou estoura o timeout:
+
+- o `PUBACK(PERSISTED)` passa a garantir apenas a gravação no disco do
+  primário;
+- a reserva é marcada como dessincronizada e só volta a ser considerada
+  sincronizada depois de receber de novo o estado completo;
+- uma reserva dessincronizada não deve ser promovida (o Juiz confere isso,
+  como no cenário 3 do diagrama de sequência).
+
+Consequência: enquanto a reserva está dessincronizada, o RPO = 0 (RNF-07) não
+vale. Leituras aceitas nesse intervalo não se perdem se só o processo do
+primário cair, porque estão no disco dele, mas ficam indisponíveis até o
+primário voltar, e se perdem se o disco do primário for perdido.
+
+O DP-04 e o RF-41 de `requisitos.md` foram atualizados para refletir esse
+comportamento.
+
+## Replicação síncrona serializa as gravações
+
+Cada registro é replicado sob o mesmo lock de escrita do store, um de cada
+vez. Isso garante a ordem dos registros na reserva, mas soma a ida e volta de
+rede e o fsync da reserva a cada gravação, e todas as sessões passam por essa
+mesma fila. Para o cenário A (baixo volume, latência relaxada) o custo é
+aceitável; não há envio em lote.
+
+## A reserva não mantém o estado em memória
+
+A reserva grava os registros apenas no store em disco. Tópicos, filas e
+cursores em memória só são montados quando ela sobe como primário. A
+promoção em funcionamento (`PROMOTE`, task 012) precisa montar esse estado a
+partir do store antes de aceitar clientes.
+

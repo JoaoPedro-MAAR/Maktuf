@@ -245,3 +245,47 @@ func TestPublishFailsWhenStoreFails(t *testing.T) {
 		t.Fatalf("pendentes = %d, esperado 0", n)
 	}
 }
+
+// A reserva valida toda a sincronização antes de gravar: um registro inválido
+// não pode apagar o estado que ela já tinha.
+func TestReplicaTargetResetKeepsStateOnInvalidRecord(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := mustOpenStore(t, dir)
+	target := replicaTarget{s}
+	sub := storeRecord{kind: recSubscribe, client: "c1", filter: "sensores/a/temperatura"}.encode()
+	must(t, target.Apply(sub))
+
+	if err := target.Reset([][]byte{{99}}); !errors.Is(err, errStoreRecord) {
+		t.Fatalf("erro = %v, esperado %v", err, errStoreRecord)
+	}
+	must(t, s.close())
+
+	_, st := mustOpenStore(t, dir)
+	if len(st.subs["c1"]) != 1 {
+		t.Fatalf("estado da reserva perdido: %v", st.subs)
+	}
+}
+
+// O snapshot enviado na sincronização recria o mesmo estado na reserva.
+func TestReplicaSnapshotResetRoundTrip(t *testing.T) {
+	src, _ := mustOpenStore(t, t.TempDir())
+	must(t, src.subscribe("c1", "sensores/+/temperatura"))
+	must(t, src.publish(deliver("a", 1), []string{"c1"}))
+	must(t, src.publish(deliver("a", 2), []string{"c1"}))
+	must(t, src.ack("c1", "a", 1))
+
+	dir := t.TempDir()
+	dst, _ := mustOpenStore(t, dir)
+	must(t, replicaSource{src}.Snapshot(func(records [][]byte) error {
+		return replicaTarget{dst}.Reset(records)
+	}))
+	must(t, dst.close())
+
+	_, st := mustOpenStore(t, dir)
+	if got := seqs(st.queues["c1"].items); !reflect.DeepEqual(got, []string{"a/2"}) {
+		t.Fatalf("fila replicada = %v", got)
+	}
+	if st.cursors["c1"]["a"] != 1 || st.sensors["a"] != 2 || len(st.subs["c1"]) != 1 {
+		t.Fatalf("estado replicado incompleto: cursor=%v sensores=%v subs=%v", st.cursors, st.sensors, st.subs)
+	}
+}

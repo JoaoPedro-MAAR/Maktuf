@@ -225,15 +225,12 @@ func (m *Heartbeat) decodePayload(d *decoder) {
 	m.LastSeq = d.u64()
 }
 
+// Replica é a mensagem do primário para a reserva. Index identifica o
+// registro (ou a sincronização) e é devolvido no REPLICA_ACK.
 type Replica struct {
-	Kind        ReplicaKind
-	Topic       string
-	SensorID    string
-	Seq         uint64
-	TimestampMS int64
-	Temperature float32
-	ClientID    string
-	TopicFilter string
+	Kind   ReplicaKind
+	Index  uint64
+	Record []byte
 }
 
 func (*Replica) Type() Type { return TypeReplica }
@@ -241,15 +238,11 @@ func (*Replica) Type() Type { return TypeReplica }
 func (m *Replica) encodePayload(e *encoder) {
 	e.u8(uint8(m.Kind))
 	switch m.Kind {
-	case ReplicaReading:
-		e.str(m.Topic)
-		e.str(m.SensorID)
-		e.u64(m.Seq)
-		e.i64(m.TimestampMS)
-		e.f32(m.Temperature)
-	case ReplicaSubscription, ReplicaUnsubscribe:
-		e.str(m.ClientID)
-		e.str(m.TopicFilter)
+	case ReplicaRecord:
+		e.u64(m.Index)
+		e.bytes(m.Record)
+	case ReplicaSyncStart, ReplicaSyncEnd:
+		e.u64(m.Index)
 	default:
 		e.err = ErrUnknownReplicaKind
 	}
@@ -258,15 +251,11 @@ func (m *Replica) encodePayload(e *encoder) {
 func (m *Replica) decodePayload(d *decoder) {
 	m.Kind = ReplicaKind(d.u8())
 	switch m.Kind {
-	case ReplicaReading:
-		m.Topic = d.str()
-		m.SensorID = d.str()
-		m.Seq = d.u64()
-		m.TimestampMS = d.i64()
-		m.Temperature = d.f32()
-	case ReplicaSubscription, ReplicaUnsubscribe:
-		m.ClientID = d.str()
-		m.TopicFilter = d.str()
+	case ReplicaRecord:
+		m.Index = d.u64()
+		m.Record = d.bytes()
+	case ReplicaSyncStart, ReplicaSyncEnd:
+		m.Index = d.u64()
 	default:
 		if d.err == nil {
 			d.err = ErrUnknownReplicaKind
@@ -275,12 +264,9 @@ func (m *Replica) decodePayload(d *decoder) {
 }
 
 type ReplicaAck struct {
-	Status      Status
-	Kind        ReplicaKind
-	SensorID    string
-	Seq         uint64
-	ClientID    string
-	TopicFilter string
+	Status Status
+	Kind   ReplicaKind
+	Index  uint64
 }
 
 func (*ReplicaAck) Type() Type { return TypeReplicaAck }
@@ -289,12 +275,8 @@ func (m *ReplicaAck) encodePayload(e *encoder) {
 	e.u8(uint8(m.Status))
 	e.u8(uint8(m.Kind))
 	switch m.Kind {
-	case ReplicaReading:
-		e.str(m.SensorID)
-		e.u64(m.Seq)
-	case ReplicaSubscription, ReplicaUnsubscribe:
-		e.str(m.ClientID)
-		e.str(m.TopicFilter)
+	case ReplicaRecord, ReplicaSyncEnd:
+		e.u64(m.Index)
 	default:
 		e.err = ErrUnknownReplicaKind
 	}
@@ -304,12 +286,8 @@ func (m *ReplicaAck) decodePayload(d *decoder) {
 	m.Status = Status(d.u8())
 	m.Kind = ReplicaKind(d.u8())
 	switch m.Kind {
-	case ReplicaReading:
-		m.SensorID = d.str()
-		m.Seq = d.u64()
-	case ReplicaSubscription, ReplicaUnsubscribe:
-		m.ClientID = d.str()
-		m.TopicFilter = d.str()
+	case ReplicaRecord, ReplicaSyncEnd:
+		m.Index = d.u64()
 	default:
 		if d.err == nil {
 			d.err = ErrUnknownReplicaKind
