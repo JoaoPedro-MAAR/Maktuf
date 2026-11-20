@@ -1,0 +1,325 @@
+package sensor_test
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/broker"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/client"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/consumer"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/sensor"
+)
+
+const timeout = 10 * time.Second
+
+var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+var fastReconnect = client.ReconnectOptions{
+	BaseDelay:   10 * time.Millisecond,
+	MaxDelay:    50 * time.Millisecond,
+	DialTimeout: time.Second,
+}
+
+type testBroker struct {
+	cancel context.CancelFunc
+	done   chan error
+	once   sync.Once
+}
+
+func startBroker(t *testing.T, addr string, cfg broker.Config) *testBroker {
+	t.Helper()
+	cfg.Addr = addr
+	cfg.Logger = discard
+	if cfg.DataDir == "" {
+		cfg.DataDir = t.TempDir()
+	}
+	srv := broker.NewServer(cfg)
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	b := &testBroker{cancel: cancel, done: make(chan error, 1)}
+	go func() { b.done <- srv.Serve(ctx) }()
+	t.Cleanup(func() { b.stop(t) })
+	return b
+}
+
+func (b *testBroker) stop(t *testing.T) {
+	t.Helper()
+	b.once.Do(func() {
+		b.cancel()
+		select {
+		case err := <-b.done:
+			if err != nil {
+				t.Errorf("shutdown do broker: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("timeout aguardando shutdown do broker")
+		}
+	})
+}
+
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	return addr
+}
+
+// startConsumer roda o consumidor de exemplo e espera as inscrições.
+func startConsumer(t *testing.T, addr string) *consumer.Consumer {
+	t.Helper()
+	c, err := consumer.New(consumer.Config{
+		Addr:          addr,
+		RetryInterval: 10 * time.Millisecond,
+		Reconnect:     fastReconnect,
+		Logger:        discard,
+	})
+	if err != nil {
+		t.Fatalf("consumer.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("consumidor: %v", err)
+		}
+	})
+	select {
+	case <-c.Ready():
+	case <-time.After(timeout):
+		t.Fatalf("timeout aguardando inscricoes do consumidor")
+	}
+	return c
+}
+
+// runSimulator executa o simulador até until devolver true e o encerra.
+func runSimulator(t *testing.T, cfg sensor.Config, until func(sensor.Stats) bool) *sensor.Simulator {
+	t.Helper()
+	cfg.Logger = discard
+	cfg.Reconnect = fastReconnect
+	sim, err := sensor.New(cfg)
+	if err != nil {
+		t.Fatalf("sensor.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- sim.Run(ctx) }()
+
+	deadline := time.Now().Add(timeout)
+	for !until(sim.Stats()) {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("timeout; stats = %+v", sim.Stats())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return sim
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout aguardando %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func baseConfig(t *testing.T, addr string) sensor.Config {
+	return sensor.Config{
+		Addr:               addr,
+		Count:              3,
+		DataDir:            t.TempDir(),
+		BufferSize:         1000,
+		ContinuousRatio:    1,
+		ContinuousInterval: 10 * time.Millisecond,
+		PublishTimeout:     time.Second,
+		DrainTimeout:       2 * time.Second,
+		Seed:               7,
+	}
+}
+
+func TestSpecsSplitProfiles(t *testing.T) {
+	specs := sensor.Specs(sensor.Config{Count: 10, ContinuousRatio: 0.1})
+	if len(specs) != 10 {
+		t.Fatalf("len = %d", len(specs))
+	}
+	if specs[0].ID != "sensor-001" || specs[0].Topic != "sensores/sensor-001/temperatura" {
+		t.Fatalf("spec[0] = %+v", specs[0])
+	}
+	if specs[0].Profile != sensor.ProfileContinuous || specs[0].Interval != sensor.DefaultContinuousInterval {
+		t.Fatalf("spec[0] deveria ser continuo: %+v", specs[0])
+	}
+	for _, s := range specs[1:] {
+		if s.Profile != sensor.ProfileLow || s.Interval != sensor.DefaultLowInterval {
+			t.Fatalf("%s deveria ser de baixa taxa: %+v", s.ID, s)
+		}
+	}
+}
+
+func TestNewRejectsInvalidConfig(t *testing.T) {
+	valid := sensor.Config{Addr: "127.0.0.1:1", Count: 1, DataDir: t.TempDir()}
+	cases := map[string]func(*sensor.Config){
+		"sem endereco":       func(c *sensor.Config) { c.Addr = "" },
+		"sem sensores":       func(c *sensor.Config) { c.Count = 0 },
+		"sem diretorio":      func(c *sensor.Config) { c.DataDir = "" },
+		"probabilidade > 1":  func(c *sensor.Config) { c.FailureProb = 1.5 },
+		"fracao negativa":    func(c *sensor.Config) { c.ContinuousRatio = -0.1 },
+		"buffer negativo":    func(c *sensor.Config) { c.BufferSize = -1 },
+		"intervalo negativo": func(c *sensor.Config) { c.ContinuousInterval = -time.Second },
+		"duracao sono negativa": func(c *sensor.Config) {
+			c.SleepDuration = -time.Second
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := valid
+			mutate(&cfg)
+			if _, err := sensor.New(cfg); !errors.Is(err, sensor.ErrInvalidConfig) {
+				t.Fatalf("err = %v, esperado ErrInvalidConfig", err)
+			}
+		})
+	}
+	if _, err := sensor.New(valid); err != nil {
+		t.Fatalf("config valida recusada: %v", err)
+	}
+}
+
+// Fluxo normal: tudo que o simulador mede chega ao consumidor, em ordem e
+// sem lacunas.
+func TestSimulatorDeliversEveryReading(t *testing.T) {
+	addr := freeAddr(t)
+	startBroker(t, addr, broker.Config{})
+	cons := startConsumer(t, addr)
+
+	sim := runSimulator(t, baseConfig(t, addr), func(s sensor.Stats) bool { return s.Measured >= 30 })
+
+	st := sim.Stats()
+	if st.Pending != 0 || st.Dropped != 0 || st.Confirmed != st.Measured {
+		t.Fatalf("buffer nao drenou: %+v", st)
+	}
+	if st.NoSubscribers != 0 {
+		t.Fatalf("leituras sem inscritos com consumidor ativo: %+v", st)
+	}
+	waitFor(t, "consumidor receber tudo", func() bool { return cons.Stats().Received == st.Measured })
+	if cs := cons.Stats(); cs.GapsUnmarked != 0 || cs.GapsMarked != 0 || cs.Sensors != 3 {
+		t.Fatalf("consumidor = %+v", cs)
+	}
+}
+
+// CE-03 / CT-05 e critério da task 016: com o broker fora, as leituras ficam
+// no buffer em disco; elas sobrevivem a reiniciar o simulador e são
+// reenviadas em ordem quando o broker volta.
+func TestReadingsSurviveSimulatorRestartWhileBrokerIsDown(t *testing.T) {
+	addr := freeAddr(t)
+	cfg := baseConfig(t, addr)
+
+	offline := runSimulator(t, cfg, func(s sensor.Stats) bool { return s.Measured >= 15 })
+	st := offline.Stats()
+	if st.Pending != int(st.Measured) || st.Connects != 0 {
+		t.Fatalf("sem broker tudo deveria ficar pendente: %+v", st)
+	}
+
+	startBroker(t, addr, broker.Config{})
+	cons := startConsumer(t, addr)
+
+	previous := st.Measured
+	online := runSimulator(t, cfg, func(s sensor.Stats) bool { return s.Measured >= 3 })
+	if st := online.Stats(); st.Pending != 0 {
+		t.Fatalf("backlog nao drenou: %+v", st)
+	}
+	total := previous + online.Stats().Measured
+
+	waitFor(t, "consumidor receber o backlog", func() bool { return cons.Stats().Received == total })
+	if cs := cons.Stats(); cs.GapsUnmarked != 0 {
+		t.Fatalf("consumidor = %+v", cs)
+	}
+}
+
+// RF-59: desconexões sorteadas não perdem leituras; o reenvio pode gerar
+// leituras repetidas, que o consumidor descarta.
+func TestSimulatedFailuresLoseNothing(t *testing.T) {
+	addr := freeAddr(t)
+	startBroker(t, addr, broker.Config{})
+	cons := startConsumer(t, addr)
+
+	cfg := baseConfig(t, addr)
+	cfg.FailureProb = 0.3
+	cfg.FailureDowntime = 30 * time.Millisecond
+
+	sim := runSimulator(t, cfg, func(s sensor.Stats) bool { return s.Failures >= 5 && s.Measured >= 40 })
+
+	// Leituras medidas durante o downtime ficam no buffer até a próxima
+	// conexão; roda de novo para drenar.
+	cfg.FailureProb = 0
+	drain := runSimulator(t, cfg, func(s sensor.Stats) bool { return s.Measured >= 3 })
+	if st := drain.Stats(); st.Pending != 0 {
+		t.Fatalf("backlog nao drenou: %+v", st)
+	}
+	total := sim.Stats().Measured + drain.Stats().Measured
+
+	waitFor(t, "consumidor receber tudo", func() bool { return cons.Stats().Received == total })
+	if cs := cons.Stats(); cs.GapsUnmarked != 0 {
+		t.Fatalf("lacunas com desconexoes simuladas: %+v", cs)
+	}
+}
+
+// RF-27 a RF-29: o sono anunciado aparece como dormindo e, ao acordar depois
+// do prazo, como offline e depois online.
+func TestSleepCyclePublishesStatus(t *testing.T) {
+	addr := freeAddr(t)
+	startBroker(t, addr, broker.Config{
+		StatusTolerance:    20 * time.Millisecond,
+		StatusScanInterval: 5 * time.Millisecond,
+	})
+	cons := startConsumer(t, addr)
+
+	cfg := baseConfig(t, addr)
+	cfg.Count = 1
+	cfg.SleepProb = 1
+	cfg.SleepDuration = 20 * time.Millisecond
+	cfg.LateWakeProb = 1
+	cfg.LateWakeExtra = 100 * time.Millisecond
+
+	runSimulator(t, cfg, func(s sensor.Stats) bool { return s.Sleeps >= 2 })
+
+	waitFor(t, "transicoes de status", func() bool {
+		cs := cons.Stats()
+		return cs.StatusOnline >= 1 && cs.StatusDormindo >= 1 && cs.StatusOffline >= 1
+	})
+}
+
+func TestBufferOverflowIsReported(t *testing.T) {
+	addr := freeAddr(t)
+	cfg := baseConfig(t, addr)
+	cfg.Count = 1
+	cfg.BufferSize = 5
+	cfg.DrainTimeout = 0
+
+	sim := runSimulator(t, cfg, func(s sensor.Stats) bool { return s.Measured >= 12 })
+	st := sim.Stats()
+	if st.Pending != 5 || st.Dropped != st.Measured-5 {
+		t.Fatalf("overflow (RF-26) = %+v", st)
+	}
+}
