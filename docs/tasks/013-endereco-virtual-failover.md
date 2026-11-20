@@ -65,6 +65,18 @@ Ajustar `docs/diagramas/` e `docs/protocolo.md` se o mecanismo exigir.
 2. **Conexões abertas no failover:** encerrar todas imediatamente ou deixar
    expirar pelo timeout do cliente.
 
+### Decisões tomadas
+
+1. **Resolvido:** proxy TCP (`cmd/vip`, `internal/vip`) que escolhe o broker
+   pelo `CONNACK`. Não fala com o Juiz, não guarda estado e não exige mudança
+   no protocolo nem na biblioteca cliente. A ressalva de ser ponto único da
+   simulação está em `docs/ressalvas.md`.
+2. **Resolvido:** as conexões abertas caem junto com a do broker; o vip fecha
+   o lado do cliente na hora e a biblioteca reconecta.
+
+RTO medido: 6,7 s com os prazos padrão e `kill -9` no primário; cerca de
+0,35 s no teste `test/e2e/failover_test.go`, que usa prazos curtos.
+
 ## Critérios de aceitação
 
 - [ ] Clientes usam um único endereço e não conhecem a topologia interna.

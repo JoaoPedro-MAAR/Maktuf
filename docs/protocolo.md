@@ -466,3 +466,22 @@ O prazo de isolamento dos brokers deve ser menor que o prazo de falha do
 Juiz. Os payloads de `HEARTBEAT` e `PROMOTE` não mudaram em relação à versão
 3; esta seção só define os valores e os sentidos.
 
+### Endereço virtual
+
+Os clientes conhecem um único endereço, o do vip (`cmd/vip`), e não sabem
+quantos brokers existem nem qual é o primário (RF-49). Para cada conexão, o
+vip:
+
+1. lê o primeiro quadro do cliente, que precisa ser `CONNECT`;
+2. repassa esse `CONNECT` aos brokers configurados, começando pelo último que
+   aceitou, até um responder `CONNACK(OK)`. A reserva e o primário isolado
+   respondem `TEMPORARY_FAILURE`, então só o primário atual é escolhido;
+3. devolve `CONNACK(OK)` ao cliente e, a partir daí, só copia bytes nos dois
+   sentidos, sem interpretar o protocolo.
+
+Se nenhum broker aceitar, o vip responde `CONNACK(TEMPORARY_FAILURE)` e o
+cliente tenta de novo com backoff. Quando a conexão com o broker cai (primário
+morto ou isolado), o vip fecha a do cliente, e a biblioteca reconecta,
+restaura as inscrições e reenvia o buffer do sensor (RF-44). O vip não fala
+com o Juiz e não exige mudança no protocolo.
+

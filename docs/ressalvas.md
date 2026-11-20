@@ -182,3 +182,37 @@ Depois do failover, a reserva promovida atende sozinha e sem o modo de aval do
 Juiz, porque não tem reserva própria configurada. O retorno do antigo
 primário como reserva e a nova sincronização são da task 014. O antigo
 primário, se voltar, recebe `PROMOTE(novo)` e permanece isolado até lá.
+
+## O vip simula o endereço virtual (task 013)
+
+O Etapa 0 e 1 descreve um IP virtual que passa do primário para a reserva.
+Um IP virtual real exige root e duas máquinas (ou namespaces de rede) e não
+roda nos testes automáticos; por isso ele é simulado pelo vip, um proxy TCP
+que leva cada conexão ao broker que aceita o `CONNECT`
+(docs/protocolo.md, seção 10).
+
+Consequências:
+
+- **O vip é um processo no caminho dos dados.** Se ele cair, nenhum cliente
+  conecta, mesmo com os brokers no ar: é ponto único de falha da simulação.
+  Num IP virtual real esse papel é da rede, não de um processo.
+- O vip não depende do Juiz: com o Juiz fora, ele continua levando os
+  clientes ao primário (RF-48).
+- Cada byte passa por um salto a mais, o que soma uma ida e volta local à
+  latência.
+- Com o primário fora e antes da promoção, o vip recusa os `CONNECT`
+  (`vip_rejected_total`); os clientes tentam de novo com backoff.
+
+## Composição do RTO (RNF-06)
+
+O tempo entre a queda do primário e a próxima entrega ao consumidor soma:
+
+1. o prazo de falha do Juiz (padrão 5 s);
+2. até uma rodada de avaliação do Juiz (padrão 0,5 s);
+3. a espera do backoff de reconexão do cliente, que cresce durante as
+   tentativas recusadas (0,1 s dobrando até 30 s por padrão).
+
+Medido com os padrões, matando o primário com `kill -9`: **6,7 s**. No teste
+automático, com prazos curtos, cerca de 0,35 s. Um isolamento longo faz o
+backoff do cliente crescer; reduzir `ReconnectOptions.MaxDelay` encurta a
+volta ao custo de mais tentativas.
