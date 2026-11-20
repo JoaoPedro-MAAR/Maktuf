@@ -34,7 +34,12 @@ func startBroker(t *testing.T) *testBroker {
 
 func startBrokerWithConfig(t *testing.T, cfg broker.Config) *testBroker {
 	t.Helper()
-	cfg.Addr = "127.0.0.1:0"
+	return startBrokerAt(t, "127.0.0.1:0", cfg)
+}
+
+func startBrokerAt(t *testing.T, addr string, cfg broker.Config) *testBroker {
+	t.Helper()
+	cfg.Addr = addr
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -348,25 +353,6 @@ func TestCloseEndsClient(t *testing.T) {
 	}
 	if !errors.Is(c.Err(), client.ErrClosed) {
 		t.Fatalf("Err = %v, esperado ErrClosed", c.Err())
-	}
-}
-
-func TestBrokerShutdownIsReported(t *testing.T) {
-	b := startBroker(t)
-	c := connect(t, b.addr, client.RoleSensor, "sensor-a")
-
-	b.stop(t)
-
-	select {
-	case <-c.Done():
-	case <-time.After(timeout):
-		t.Fatalf("Done nao foi fechado apos queda do broker")
-	}
-	if !errors.Is(c.Err(), client.ErrDisconnected) {
-		t.Fatalf("Err = %v, esperado ErrDisconnected", c.Err())
-	}
-	if _, err := c.Publish(testContext(t), sensorTopic, client.Reading{SensorID: "sensor-a", Seq: 1}); !errors.Is(err, client.ErrDisconnected) {
-		t.Fatalf("Publish apos queda: esperava ErrDisconnected, obtido %v", err)
 	}
 }
 

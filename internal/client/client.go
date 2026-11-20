@@ -1,6 +1,8 @@
 // Package client é a biblioteca de comunicação do Maktuf. Ela esconde o
-// socket TCP e o enquadramento binário do protocolo (docs/protocolo.md) atrás
-// das operações Connect, Publish, Subscribe, Unsubscribe e Close (RF-51).
+// socket TCP, o enquadramento binário do protocolo (docs/protocolo.md), a
+// reconexão automática e o reenvio do buffer durável do sensor atrás das
+// operações Connect, Publish, Subscribe, Unsubscribe, Sleep e Close (RF-51,
+// RF-53, RF-54).
 //
 // Uso por um sensor:
 //
@@ -33,11 +35,11 @@
 //	for msg := range c.Messages() {
 //		fmt.Println(msg.SensorID, msg.Seq, msg.Temperature, msg.Timestamp)
 //	}
-//	// Messages é fechado quando a conexão termina; c.Err() informa a causa.
 //
 // Todos os métodos podem ser chamados concorrentemente por várias goroutines
-// (RF-55). Reconexão automática ainda não é feita: quando a conexão cai, Done
-// é fechado e as operações passam a falhar com ErrDisconnected.
+// (RF-55). Quando a conexão cai, o cliente reconecta com backoff e restaura as
+// inscrições ativas; Done só é fechado em Close ou quando as tentativas de
+// reconexão se esgotam.
 package client
 
 import (
@@ -82,7 +84,8 @@ var (
 	// ErrClosed indica que Close foi chamado.
 	ErrClosed = errors.New("client: cliente fechado")
 
-	// ErrDisconnected indica que a conexão com o broker foi perdida.
+	// ErrDisconnected indica que a conexão com o broker foi perdida. Durante a
+	// reconexão automática, operações em andamento podem devolver este erro.
 	ErrDisconnected = errors.New("client: conexao com o broker perdida")
 
 	// ErrHandshake indica que o broker recusou ou não concluiu o CONNECT.
@@ -94,6 +97,13 @@ var (
 	// ErrUnexpectedMessage indica uma resposta fora do protocolo; a conexão é
 	// encerrada porque o fluxo deixou de ser confiável.
 	ErrUnexpectedMessage = errors.New("client: mensagem inesperada do broker")
+
+	// ErrReconnectExhausted indica que MaxAttempts foi atingido sem reconectar.
+	ErrReconnectExhausted = errors.New("client: tentativas de reconexao esgotadas")
+
+	// ErrTemporaryFailure indica que o broker pediu retry mantendo a leitura no
+	// buffer (protocolo, status TEMPORARY_FAILURE).
+	ErrTemporaryFailure = errors.New("client: falha temporaria; leitura mantida no buffer")
 
 	ErrInvalidArgument = errors.New("client: argumento invalido")
 )
@@ -146,61 +156,70 @@ type waiter struct {
 }
 
 // Client é uma conexão com o broker. A escrita é serializada por writeMu; a
-// leitura é feita por uma única goroutine que roteia respostas e DELIVERs.
+// leitura é feita por uma goroutine por conexão que roteia respostas e
+// DELIVERs. O estado da conexão é protegido por mu.
 //
 // Como SUBACK e UNSUBACK não identificam o pedido, as respostas são
 // correlacionadas pela ordem: o broker trata as mensagens de uma sessão em
 // sequência, e o waiter é enfileirado sob writeMu junto com a escrita.
 type Client struct {
-	conn     net.Conn
+	addr     string
 	clientID string
+	role     Role
+	opts     Options
+
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	writeMu sync.Mutex
 
-	mu      sync.Mutex
-	pending [waiterKinds][]waiter
-	inbox   []Message
-	err     error
+	mu           sync.Mutex
+	conn         net.Conn
+	restoring    bool
+	stateChanged chan struct{}
+	terminal     error
+	pending      [waiterKinds][]waiter
+	inbox        []Message
+	subs         map[string]struct{}
 
 	inboxSignal chan struct{}
 	done        chan struct{}
 	messages    chan Message
 	wg          sync.WaitGroup
+
+	sensor *sensorBuffer
 }
 
 // Connect abre a conexão TCP, envia CONNECT e valida o CONNACK. O contexto
-// limita o tempo de conexão e do handshake.
+// limita o tempo de conexão e do handshake. Quedas posteriores são tratadas
+// pela reconexão automática com os parâmetros padrão.
 func Connect(ctx context.Context, addr string, role Role, clientID string) (*Client, error) {
-	if clientID == "" {
-		return nil, fmt.Errorf("%w: client_id vazio", ErrInvalidArgument)
-	}
-	if role != RoleSensor && role != RoleConsumer {
-		return nil, fmt.Errorf("%w: papel %d", ErrInvalidArgument, role)
-	}
+	return ConnectWithOptions(ctx, addr, role, clientID, Options{})
+}
 
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("client: conectar a %s: %w", addr, err)
-	}
-
-	reader := bufio.NewReader(conn)
-	if err := handshake(ctx, conn, reader, role, clientID); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("%w: %s: %w", ErrHandshake, addr, err)
-	}
-
+func newClient(addr string, role Role, clientID string, opts Options) *Client {
+	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
-		conn:        conn,
-		clientID:    clientID,
-		inboxSignal: make(chan struct{}, 1),
-		done:        make(chan struct{}),
-		messages:    make(chan Message, messageBuffer),
+		addr:         addr,
+		clientID:     clientID,
+		role:         role,
+		opts:         opts,
+		ctx:          ctx,
+		cancel:       cancel,
+		stateChanged: make(chan struct{}),
+		subs:         make(map[string]struct{}),
+		inboxSignal:  make(chan struct{}, 1),
+		done:         make(chan struct{}),
+		messages:     make(chan Message, messageBuffer),
 	}
-	c.wg.Add(2)
-	go c.readLoop(reader)
-	go c.deliverLoop()
-	return c, nil
+	if opts.Sensor != nil {
+		c.sensor = &sensorBuffer{
+			buffer:   opts.Sensor.Buffer,
+			topic:    opts.Sensor.Topic,
+			sensorID: opts.Sensor.SensorID,
+		}
+	}
+	return c
 }
 
 func handshake(ctx context.Context, conn net.Conn, r *bufio.Reader, role Role, clientID string) error {
@@ -238,18 +257,28 @@ func (c *Client) ClientID() string { return c.clientID }
 
 // Messages devolve o canal de leituras entregues pelo broker. O DELIVER_ACK é
 // enviado quando a leitura é colocada no canal; a entrega é at-least-once e
-// a mesma leitura pode chegar mais de uma vez. O canal é fechado quando a
-// conexão termina.
+// a mesma leitura pode chegar mais de uma vez. O canal só é fechado no
+// encerramento final do cliente; quedas transitórias são escondidas.
 func (c *Client) Messages() <-chan Message { return c.messages }
 
-// Done é fechado quando a conexão termina, por Close ou por falha.
+// Done é fechado quando o cliente termina definitivamente, por Close ou por
+// esgotamento das tentativas de reconexão.
 func (c *Client) Done() <-chan struct{} { return c.done }
 
-// Err devolve a causa do encerramento, ou nil enquanto a conexão está ativa.
+// Err devolve a causa do encerramento final, ou nil enquanto o cliente
+// está ativo ou reconectando.
 func (c *Client) Err() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.err
+	return c.terminal
+}
+
+// Connected informa se há uma conexão pronta, com o CONNACK concluído e as
+// inscrições restauradas.
+func (c *Client) Connected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn != nil && !c.restoring && c.terminal == nil
 }
 
 // Publish envia a leitura e devolve o status do PUBACK (RF-52).
@@ -280,20 +309,46 @@ func (c *Client) Sleep(ctx context.Context, duration time.Duration) error {
 	if duration < 0 || duration.Milliseconds() > math.MaxUint32 {
 		return fmt.Errorf("%w: duracao %s fora do intervalo", ErrInvalidArgument, duration)
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if err := c.Err(); err != nil {
-		return err
+	msg := &protocol.Sleep{DurationMS: uint32(duration.Milliseconds())}
+	for {
+		conn, err := c.waitConnected(ctx)
+		if err != nil {
+			return err
+		}
+
+		c.writeMu.Lock()
+		c.mu.Lock()
+		if c.terminal != nil {
+			err := c.terminal
+			c.mu.Unlock()
+			c.writeMu.Unlock()
+			return err
+		}
+		if c.conn != conn {
+			c.mu.Unlock()
+			c.writeMu.Unlock()
+			continue
+		}
+		c.mu.Unlock()
+		err = c.writeLocked(ctx, conn, msg)
+		c.writeMu.Unlock()
+
+		if err == nil {
+			return nil
+		}
+		c.connectionLost(conn, fmt.Errorf("envio de %s: %w", msg.Type(), err))
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if term := c.Err(); term != nil {
+			return term
+		}
 	}
-	return c.writeLocked(ctx, &protocol.Sleep{DurationMS: uint32(duration.Milliseconds())})
 }
 
-// Subscribe registra o filtro e aguarda o SUBACK. Inscrições sobrevivem à
-// desconexão no broker e só são removidas por Unsubscribe.
+// Subscribe registra o filtro e aguarda o SUBACK. Inscrições ativas são
+// restauradas automaticamente depois de uma reconexão (RF-54).
 func (c *Client) Subscribe(ctx context.Context, filter string) error {
 	msg, err := c.request(ctx, waitSubAck, 0, &protocol.Subscribe{TopicFilter: filter})
 	if err != nil {
@@ -302,6 +357,9 @@ func (c *Client) Subscribe(ctx context.Context, filter string) error {
 	if status := msg.(*protocol.SubAck).Status; status != protocol.StatusOK {
 		return fmt.Errorf("%w: SUBACK %s", ErrRejected, status)
 	}
+	c.mu.Lock()
+	c.subs[filter] = struct{}{}
+	c.mu.Unlock()
 	return nil
 }
 
@@ -315,18 +373,35 @@ func (c *Client) Unsubscribe(ctx context.Context, filter string) error {
 	if status := msg.(*protocol.UnsubAck).Status; status != protocol.StatusOK {
 		return fmt.Errorf("%w: UNSUBACK %s", ErrRejected, status)
 	}
+	c.mu.Lock()
+	delete(c.subs, filter)
+	c.mu.Unlock()
 	return nil
 }
 
 // Close encerra a conexão, falha as operações pendentes com ErrClosed e espera
 // as goroutines internas terminarem.
 func (c *Client) Close() error {
-	c.fail(ErrClosed)
+	c.shutdown(ErrClosed)
 	c.wg.Wait()
 	return nil
 }
 
 func (c *Client) request(ctx context.Context, kind waiterKind, seq uint64, msg protocol.Message) (protocol.Message, error) {
+	for {
+		conn, err := c.waitConnected(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := c.requestOnConn(ctx, conn, kind, seq, msg)
+		if errors.Is(err, errStaleConnection) {
+			continue
+		}
+		return response, err
+	}
+}
+
+func (c *Client) requestOnConn(ctx context.Context, conn net.Conn, kind waiterKind, seq uint64, msg protocol.Message) (protocol.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -335,21 +410,32 @@ func (c *Client) request(ctx context.Context, kind waiterKind, seq uint64, msg p
 
 	c.writeMu.Lock()
 	c.mu.Lock()
-	if c.err != nil {
-		err := c.err
+	if c.terminal != nil {
+		err := c.terminal
 		c.mu.Unlock()
 		c.writeMu.Unlock()
 		return nil, err
 	}
+	if c.conn != conn {
+		c.mu.Unlock()
+		c.writeMu.Unlock()
+		return nil, errStaleConnection
+	}
 	c.pending[kind] = append(c.pending[kind], w)
 	c.mu.Unlock()
-	err := c.writeLocked(ctx, msg)
+	err := c.writeLocked(ctx, conn, msg)
 	c.writeMu.Unlock()
 
 	if err != nil {
 		// Uma escrita interrompida pode deixar o fluxo com meio quadro.
-		c.fail(fmt.Errorf("%w: envio de %s: %w", ErrDisconnected, msg.Type(), err))
-		return nil, ctxErr(ctx, c.Err())
+		c.connectionLost(conn, fmt.Errorf("envio de %s: %w", msg.Type(), err))
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if term := c.Err(); term != nil {
+			return nil, term
+		}
+		return nil, fmt.Errorf("%w: envio de %s: %w", ErrDisconnected, msg.Type(), err)
 	}
 
 	select {
@@ -362,33 +448,31 @@ func (c *Client) request(ctx context.Context, kind waiterKind, seq uint64, msg p
 	}
 }
 
-func (c *Client) writeLocked(ctx context.Context, msg protocol.Message) error {
+func (c *Client) writeLocked(ctx context.Context, conn net.Conn, msg protocol.Message) error {
 	if deadline, ok := ctx.Deadline(); ok {
-		_ = c.conn.SetWriteDeadline(deadline)
-		defer func() { _ = c.conn.SetWriteDeadline(time.Time{}) }()
+		_ = conn.SetWriteDeadline(deadline)
+		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
 	}
-	return protocol.WriteMessage(c.conn, msg)
+	return protocol.WriteMessage(conn, msg)
 }
 
-func (c *Client) write(msg protocol.Message) error {
+// writeCurrent envia uma mensagem sem waiter (DELIVER_ACK) na conexão ativa.
+func (c *Client) writeCurrent(msg protocol.Message) (net.Conn, error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return protocol.WriteMessage(c.conn, msg)
-}
 
-func (c *Client) readLoop(r *bufio.Reader) {
-	defer c.wg.Done()
-	for {
-		msg, err := protocol.ReadMessage(r)
-		if err != nil {
-			c.fail(fmt.Errorf("%w: %w", ErrDisconnected, err))
-			return
-		}
-		if err := c.route(msg); err != nil {
-			c.fail(err)
-			return
-		}
+	c.mu.Lock()
+	conn := c.conn
+	term := c.terminal
+	c.mu.Unlock()
+
+	if term != nil {
+		return nil, term
 	}
+	if conn == nil {
+		return nil, ErrDisconnected
+	}
+	return conn, protocol.WriteMessage(conn, msg)
 }
 
 func (c *Client) route(msg protocol.Message) error {
@@ -473,29 +557,16 @@ func (c *Client) deliverLoop() {
 		}
 
 		ack := &protocol.DeliverAck{Topic: next.Topic, SensorID: next.SensorID, Seq: next.Seq}
-		if err := c.write(ack); err != nil {
-			c.fail(fmt.Errorf("%w: envio de DELIVER_ACK: %w", ErrDisconnected, err))
+		conn, err := c.writeCurrent(ack)
+		if err != nil {
+			if errors.Is(err, ErrDisconnected) {
+				if conn != nil {
+					c.connectionLost(conn, fmt.Errorf("envio de DELIVER_ACK: %w", err))
+				}
+				// O broker reenvia a leitura sem ACK após a reconexão.
+				continue
+			}
 			return
-		}
-	}
-}
-
-func (c *Client) fail(err error) {
-	c.mu.Lock()
-	if c.err != nil {
-		c.mu.Unlock()
-		return
-	}
-	c.err = err
-	pending := c.pending
-	c.pending = [waiterKinds][]waiter{}
-	close(c.done)
-	c.mu.Unlock()
-
-	_ = c.conn.Close()
-	for _, waiters := range pending {
-		for _, w := range waiters {
-			w.ch <- response{err: err}
 		}
 	}
 }
