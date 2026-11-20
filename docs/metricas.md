@@ -90,6 +90,16 @@ sensor. Por isso tem nome diferente da `delivery_latency_seconds` do broker.
 A `failover_duration_seconds` mede só a parte coordenada pelo Juiz. O RTO
 completo (RNF-06) soma o prazo de falha e a reconexão dos clientes (task 013).
 
+## Endereço virtual (vip)
+
+`go run ./cmd/vip -backends 127.0.0.1:7000,127.0.0.1:7001 -metrics-addr 127.0.0.1:9104`
+
+| Métrica | Tipo | Rótulos | Quando muda |
+|---|---|---|---|
+| `vip_connections` | gauge | — | Pares cliente↔broker ativos |
+| `vip_routed_total` | counter | `backend` | Conexão de cliente entregue a um broker; a troca de `backend` marca o failover visto pelos clientes |
+| `vip_rejected_total` | counter | — | `CONNECT` recusado porque nenhum broker aceitou: a janela de indisponibilidade |
+
 ## Histogramas e percentis
 
 Cada histograma é exposto no formato padrão (`_bucket`, `_sum`, `_count`),
