@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/metrics"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/replication"
 )
 
@@ -21,6 +23,13 @@ const (
 	DefaultSensorQueueLimit = 32
 	// DefaultSubscriberQueueLimit limita a retenção de cada assinante (RF-36).
 	DefaultSubscriberQueueLimit = 10000
+
+	// DefaultHeartbeatInterval é o período do HEARTBEAT ao Juiz.
+	DefaultHeartbeatInterval = time.Second
+	// DefaultFenceTimeout é quanto o primário espera o aval do Juiz para
+	// confirmar uma escrita sem reserva antes de se isolar. Deve ser menor
+	// que o prazo de falha do Juiz.
+	DefaultFenceTimeout = 3 * time.Second
 )
 
 // Role é o papel do broker no par replicado (DP-12).
@@ -38,6 +47,7 @@ var (
 	errQueueLimit   = errors.New("broker: limite da fila do assinante deve ser >= 2")
 	errInvalidRole  = errors.New("broker: papel invalido")
 	errReplication  = errors.New("broker: configuracao de replicacao invalida")
+	errJudgeConfig  = errors.New("broker: configuracao do juiz invalida")
 )
 
 type Config struct {
@@ -68,6 +78,17 @@ type Config struct {
 	// ReplicaTimeout limita a conexão com a reserva e a espera de cada
 	// REPLICA_ACK. Valores <= 0 usam replication.DefaultTimeout.
 	ReplicaTimeout time.Duration
+	// BrokerID identifica o broker para o Juiz. Obrigatório com JudgeAddr.
+	BrokerID string
+	// JudgeAddr é o endereço do Juiz. Vazio desliga heartbeat, promoção e
+	// isolamento (task 012).
+	JudgeAddr string
+	// HeartbeatInterval é o período do HEARTBEAT. Valores <= 0 usam
+	// DefaultHeartbeatInterval.
+	HeartbeatInterval time.Duration
+	// FenceTimeout limita a espera pelo aval do Juiz no modo sem reserva.
+	// Valores <= 0 usam DefaultFenceTimeout.
+	FenceTimeout time.Duration
 	// Metrics recebe as métricas do broker. Nil cria um registro próprio,
 	// acessível por Server.Metrics.
 	Metrics *metrics.Registry
@@ -96,11 +117,20 @@ type Server struct {
 	monitor    *monitor
 	store      *store
 	primary    *replication.Primary
-	replica    *replication.Replica
 	registry   *metrics.Registry
 	metrics    *brokerMetrics
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
+
+	// Estado de alta disponibilidade (task 012). O papel muda de reserva
+	// para primário na promoção; haMu serializa a promoção e o acesso à
+	// reserva.
+	role    atomic.Value
+	fenced  atomic.Bool
+	deposed atomic.Bool
+	judge   *judgeLink
+	haMu    sync.Mutex
+	replica *replication.Replica
 }
 
 func NewServer(cfg Config) *Server {
@@ -128,6 +158,12 @@ func NewServer(cfg Config) *Server {
 	if cfg.ReplicaTimeout <= 0 {
 		cfg.ReplicaTimeout = replication.DefaultTimeout
 	}
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = DefaultHeartbeatInterval
+	}
+	if cfg.FenceTimeout <= 0 {
+		cfg.FenceTimeout = DefaultFenceTimeout
+	}
 	st := &store{}
 	topics := NewTopicManager()
 	deliveries := newDeliveryManager(st, cfg.Logger, cfg.SubscriberQueueLimit)
@@ -148,6 +184,12 @@ func NewServer(cfg Config) *Server {
 		monitor:    newMonitor(status, cfg.StatusScanInterval),
 		store:      st,
 		registry:   cfg.Metrics,
+	}
+	s.role.Store(cfg.Role)
+	if cfg.JudgeAddr != "" {
+		// Criado aqui, e não em Listen, para as métricas lerem o campo sem
+		// corrida com a inicialização.
+		s.judge = newJudgeLink(s)
 	}
 	s.metrics = newBrokerMetrics(cfg.Metrics, s)
 	deliveries.onSend = s.metrics.deliverySent
@@ -189,11 +231,16 @@ func (s *Server) Listen() error {
 	}
 	s.listener = ln
 	if s.cfg.Role == RolePrimary && s.cfg.ReplicaAddr != "" {
-		s.primary = replication.NewPrimary(replication.PrimaryConfig{
+		pcfg := replication.PrimaryConfig{
 			Addr:    s.cfg.ReplicaAddr,
 			Timeout: s.cfg.ReplicaTimeout,
 			Logger:  s.log,
-		})
+		}
+		if s.judge != nil {
+			pcfg.ConfirmAlone = s.judge.confirmAlone
+			pcfg.OnChange = s.replicaChanged
+		}
+		s.primary = replication.NewPrimary(pcfg)
 		s.store.replicator = s.primary
 	}
 	return nil
@@ -215,6 +262,12 @@ func (s *Server) validate() error {
 	default:
 		return fmt.Errorf("%w: %q", errInvalidRole, s.cfg.Role)
 	}
+	if s.cfg.JudgeAddr != "" && s.cfg.BrokerID == "" {
+		return fmt.Errorf("%w: o juiz exige BrokerID", errJudgeConfig)
+	}
+	if s.cfg.BrokerID == protocol.JudgeID {
+		return fmt.Errorf("%w: BrokerID %q e reservado ao juiz", errJudgeConfig, protocol.JudgeID)
+	}
 	return nil
 }
 
@@ -229,18 +282,12 @@ func (s *Server) openStore() error {
 
 	if s.cfg.Role == RoleBackup {
 		// A reserva não atende clientes: o estado fica só no store e é
-		// montado em memória quando ela for promovida (task 012).
+		// montado em memória quando ela for promovida (promote).
 		s.log.Info("reserva com estado em disco", "data_dir", s.cfg.DataDir, "sensors", len(state.sensors))
 		return nil
 	}
 
-	for clientID, filters := range state.subs {
-		for filter := range filters {
-			s.topics.Subscribe(clientID, filter)
-		}
-	}
-	s.deliveries.restore(state)
-	s.publisher.restore(state.sensors)
+	s.loadState(state)
 
 	if !st.persistent() {
 		s.log.Warn("broker sem diretorio de dados: estado apenas em memoria")
@@ -253,6 +300,19 @@ func (s *Server) openStore() error {
 	s.log.Info("estado recuperado", "data_dir", s.cfg.DataDir,
 		"subscribers", len(state.subs), "pending", pending, "sensors", len(state.sensors))
 	return nil
+}
+
+// loadState monta em memória inscrições, filas, cursores e o último seq de
+// cada sensor a partir do estado do store. Usada ao abrir o primário e na
+// promoção da reserva.
+func (s *Server) loadState(state *storeState) {
+	for clientID, filters := range state.subs {
+		for filter := range filters {
+			s.topics.Subscribe(clientID, filter)
+		}
+	}
+	s.deliveries.restore(state)
+	s.publisher.restore(state.sensors)
 }
 
 func (s *Server) Addr() net.Addr {
@@ -292,7 +352,10 @@ func (s *Server) Serve(ctx context.Context) error {
 	if s.replica != nil {
 		s.replica.Start()
 	}
-	s.log.Info("broker escutando", "addr", s.listener.Addr().String())
+	if s.judge != nil {
+		s.judge.start()
+	}
+	s.log.Info("broker escutando", "addr", s.listener.Addr().String(), "role", string(s.Role()))
 
 	for {
 		conn, err := s.listener.Accept()
@@ -323,6 +386,11 @@ func (s *Server) Serve(ctx context.Context) error {
 // shutdown espera as sessões e laços de entrega terminarem antes de fechar o
 // store, para nenhuma gravação ficar pela metade.
 func (s *Server) shutdown() error {
+	// O link com o Juiz para primeiro: nenhuma promoção começa durante o
+	// encerramento.
+	if s.judge != nil {
+		s.judge.close()
+	}
 	s.wg.Wait()
 	s.scheduler.close()
 	s.monitor.close()
@@ -330,15 +398,18 @@ func (s *Server) shutdown() error {
 	if s.primary != nil {
 		_ = s.primary.Close()
 	}
+	s.haMu.Lock()
 	if s.replica != nil {
 		_ = s.replica.Close()
+		s.replica = nil
 	}
+	s.haMu.Unlock()
 	return s.store.close()
 }
 
 // Role devolve o papel configurado do broker.
 func (s *Server) Role() Role {
-	return s.cfg.Role
+	return s.role.Load().(Role)
 }
 
 // ReplicaSynced informa se a reserva está sincronizada com este primário.
@@ -358,6 +429,8 @@ func (s *Server) ReplicaDesyncs() uint64 {
 // ReplicationAddr devolve o endereço de replicação da reserva; nil fora do
 // papel de reserva ou antes de Listen.
 func (s *Server) ReplicationAddr() net.Addr {
+	s.haMu.Lock()
+	defer s.haMu.Unlock()
 	if s.replica == nil {
 		return nil
 	}
@@ -381,17 +454,7 @@ func (s *Server) Close() error {
 		if s.listener != nil {
 			_ = s.listener.Close()
 		}
-
-		s.mu.Lock()
-		sessions := make([]*session, 0, len(s.sessions))
-		for sess := range s.sessions {
-			sessions = append(sessions, sess)
-		}
-		s.mu.Unlock()
-
-		for _, sess := range sessions {
-			_ = sess.close()
-		}
+		s.closeSessions()
 	})
 	return nil
 }

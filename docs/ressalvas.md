@@ -134,3 +134,51 @@ cursores em memória só são montados quando ela sobe como primário. A
 promoção em funcionamento (`PROMOTE`, task 012) precisa montar esse estado a
 partir do store antes de aceitar clientes.
 
+
+## Juiz único (task 012)
+
+Há um único Juiz (DP-12, ponto em aberto 6 resolvido). Ele é ponto único de
+falha da coordenação, não dos dados: com o Juiz fora, os brokers seguem
+atendendo enquanto a reserva estiver sincronizada, e o failover fica suspenso
+até ele voltar (RF-48).
+
+## Dupla falha: Juiz e reserva fora
+
+Com o Juiz configurado, o primário só confirma escritas sem reserva com o aval
+do Juiz (docs/protocolo.md, seção 10). Se o Juiz e a reserva caírem juntos, o
+primário não confirma mais nada e se isola: o sistema fica indisponível, em vez
+de aceitar leituras que um failover posterior poderia perder (RPO = 0,
+RNF-07). Os sensores mantêm as leituras no buffer e o primário volta a atender
+quando o Juiz ou a reserva retornam.
+
+## Partição de rede com a conexão de replicação meio-aberta
+
+A reserva recusa a promoção enquanto a conexão de replicação está aberta, o
+que evita dois primários quando só a ligação Juiz↔primário cai. Se o primário
+morrer sem fechar a conexão (queda de máquina ou de rede, não do processo), a
+reserva só percebe pelo keepalive TCP do sistema operacional, o que pode levar
+minutos; até lá a promoção fica bloqueada e o RTO de 30 s (RNF-06) não vale.
+A queda do processo do primário fecha a conexão e não tem esse atraso.
+
+## Juiz recém-iniciado
+
+O Juiz não guarda estado em disco. Depois de reiniciar, ele espera um prazo de
+falha ouvindo os brokers antes de decidir. Se o primário já estiver fora
+nesse momento, o Juiz não conhece o último índice dele e não promove a
+reserva: o failover exige ter visto o primário.
+
+## Janela mínima ao cancelar uma promoção
+
+Se o primário voltar a falar com o Juiz no mesmo instante em que a reserva
+aceita o `PROMOTE`, o Juiz pode manter o antigo primário como ativo; a reserva
+recém-promovida recebe `PROMOTE(antigo)` e se isola. Escritas aceitas por ela
+nesse intervalo, de milissegundos, não ficam no primário ativo. Como a reserva
+só aceita o `PROMOTE` sem conexão de replicação aberta, isso exige o primário
+isolado de todos e voltando exatamente durante a promoção.
+
+## A nova primária roda sem reserva
+
+Depois do failover, a reserva promovida atende sozinha e sem o modo de aval do
+Juiz, porque não tem reserva própria configurada. O retorno do antigo
+primário como reserva e a nova sincronização são da task 014. O antigo
+primário, se voltar, recebe `PROMOTE(novo)` e permanece isolado até lá.

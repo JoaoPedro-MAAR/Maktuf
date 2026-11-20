@@ -70,10 +70,10 @@ bytes. Isso resolve, respectivamente, mensagens coladas e leituras parciais.
 | `0x09` | `DELIVER` | Broker → Cliente |
 | `0x0A` | `DELIVER_ACK` | Cliente → Broker |
 | `0x0B` | `SLEEP` | Sensor → Broker |
-| `0x0C` | `HEARTBEAT` | Broker → Juiz |
+| `0x0C` | `HEARTBEAT` | Broker → Juiz; eco Juiz → Broker |
 | `0x0D` | `REPLICA` | Primário → Reserva |
 | `0x0E` | `REPLICA_ACK` | Reserva → Primário |
-| `0x0F` | `PROMOTE` | Juiz → Reserva |
+| `0x0F` | `PROMOTE` | Juiz → Broker |
 
 ## 5. Payloads
 
@@ -257,8 +257,20 @@ Regras do `SLEEP`:
 | Campo | Tipo |
 |---|---|
 | `broker_id` | `string` |
-| `state` | `uint8` |
+| `state` | `uint8` (ver tabela abaixo) |
 | `last_seq` | `uint64` |
+
+| `state` | Significado |
+|---|---|
+| `0` | Usado só no eco do Juiz |
+| `1` | Primário atendendo clientes |
+| `2` | Reserva sincronizada (pode ser promovida) |
+| `3` | Reserva sem sincronização válida (não pode ser promovida) |
+| `4` | Primário isolado: não atende clientes |
+
+`last_seq` é o **índice de replicação** do broker, não um `seq` de sensor:
+no primário, o índice do último registro gravado; na reserva, o do último
+registro aplicado. O uso está na seção 10.
 
 ### REPLICA
 
@@ -296,6 +308,10 @@ a reserva não conseguiu gravar; o primário trata como falha da reserva.
 | Campo | Tipo |
 |---|---|
 | `broker_id` | `string` |
+
+`broker_id` é o broker que deve ser o primário. Quem recebe o próprio id
+assume (reserva) ou volta a atender (primário isolado); quem recebe outro id
+se isola. Detalhes na seção 10.
 
 ## 6. Status
 
@@ -378,7 +394,75 @@ Se a reserva não responder dentro do timeout configurado, responder
   completa.
 
 Uma reserva dessincronizada não deve ser promovida: ela não tem as leituras
-aceitas enquanto estava fora. O estado de sincronização fica exposto no
-primário para o Juiz (task 012). As consequências do modo degradado estão em
+aceitas enquanto estava fora. As consequências do modo degradado estão em
 [`ressalvas.md`](ressalvas.md).
+
+Com o Juiz configurado, o modo degradado depende do aval dele: cada registro
+gravado sem reserva só é confirmado ao cliente depois que o Juiz ecoar um
+`HEARTBEAT` com `last_seq` maior ou igual ao índice daquele registro. Sem eco
+dentro do prazo de isolamento, a operação falha (sem `PUBACK`, o sensor mantém
+a leitura no buffer) e o primário se isola (seção 10).
+
+## 10. Juiz
+
+O Juiz coordena o failover do par primário/reserva (DP-12). Ele não recebe
+leituras e não está no caminho dos dados (RF-48).
+
+### Conexão e heartbeat
+
+- Cada broker abre uma conexão TCP com o endereço do Juiz e envia
+  `HEARTBEAT(broker_id, state, last_seq)` a cada intervalo configurado e
+  sempre que o estado muda. Se a conexão cair, o broker só registra o erro e
+  reconecta com backoff.
+- O Juiz responde cada `HEARTBEAT` com um eco: `HEARTBEAT(broker_id = "juiz",
+  state = 0, last_seq = o recebido)`. O eco é o que permite ao broker saber
+  que o Juiz está vivo, já que uma escrita TCP para um Juiz inalcançável pode
+  parecer bem-sucedida por minutos.
+- O Juiz **não** ecoa um primário (`state` 1 ou 4) que não seja o ativo: sem
+  eco, esse broker não consegue confirmar escritas sem reserva.
+- `broker_id = "juiz"` é reservado.
+
+### Índice de replicação
+
+O índice do primário começa no relógio (nanossegundos Unix) e avança a cada
+registro gravado, com ou sem reserva, crescendo também entre reinícios. A
+sincronização completa leva o índice atual, e cada `RECORD` leva o seu. Assim,
+a reserva sincronizada tem o mesmo índice do primário, e índice da reserva
+menor que o do primário indica registros que faltam nela.
+
+### Promoção
+
+O Juiz avalia o estado a cada período configurado e envia `PROMOTE(R)` à
+reserva R quando, ao mesmo tempo:
+
+1. já passou o período de aprendizado (um prazo de falha desde que o Juiz
+   subiu), para não decidir sem ter ouvido os brokers;
+2. o primário ativo está sem `HEARTBEAT` há mais que o prazo de falha;
+3. R tem `HEARTBEAT` recente com `state = 2`;
+4. o `last_seq` de R é maior ou igual ao último `last_seq` do primário.
+
+A reserva **recusa** o `PROMOTE` enquanto a conexão de replicação com o
+primário estiver aberta (o primário está vivo, por exemplo numa partição só
+entre Juiz e primário). O Juiz repete o `PROMOTE` a cada período. Ao aceitar,
+a reserva fecha o endereço de replicação, monta em memória o estado do store e
+passa a aceitar `CONNECT` e a anunciar `state = 1`; nesse momento o Juiz
+considera o failover concluído.
+
+### Isolamento (anti split-brain)
+
+O primário deixa de atender clientes (fecha as sessões e responde
+`CONNACK(TEMPORARY_FAILURE)`) e anuncia `state = 4` quando:
+
+- a reserva está dessincronizada **e** o Juiz não dá o aval de uma escrita
+  dentro do prazo de isolamento; ou
+- recebe `PROMOTE` com o id de outro broker (foi deposto).
+
+Ele volta a atender quando recebe `PROMOTE` com o próprio id ou, se não foi
+deposto, quando a reserva volta a sincronizar. O Juiz envia `PROMOTE(ativo)`
+a todo broker que anuncie `state` 1 ou 4 sem ser o ativo, e `PROMOTE(ativo)`
+ao próprio ativo isolado.
+
+O prazo de isolamento dos brokers deve ser menor que o prazo de falha do
+Juiz. Os payloads de `HEARTBEAT` e `PROMOTE` não mudaram em relação à versão
+3; esta seção só define os valores e os sentidos.
 

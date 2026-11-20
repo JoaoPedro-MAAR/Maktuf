@@ -13,6 +13,7 @@ import (
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/broker"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/replication"
 )
 
 const (
@@ -501,4 +502,104 @@ func TestReplicaTimeoutDesyncsAndResyncs(t *testing.T) {
 		t.Fatalf("ressincronizacao com %d registros, esperado o estado completo", n)
 	}
 	waitFor(t, "reserva ressincronizada", primary.srv.ReplicaSynced)
+}
+
+type memTarget struct {
+	mu      sync.Mutex
+	records [][]byte
+}
+
+func (m *memTarget) Apply(record []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.records = append(m.records, record)
+	return nil
+}
+
+func (m *memTarget) Reset(records [][]byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.records = append([][]byte(nil), records...)
+	return nil
+}
+
+type memSource struct{ records [][]byte }
+
+func (m memSource) Snapshot(fn func(records [][]byte) error) error { return fn(m.records) }
+
+// Task 012: a reserva informa sincronização e índice aplicado ao Juiz. O
+// índice acompanha o do primário, e a queda da conexão não desfaz a
+// sincronização (é o caso em que ela pode ser promovida).
+func TestReplicaStatusFollowsPrimaryIndex(t *testing.T) {
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	replica, err := replication.Listen("127.0.0.1:0", &memTarget{}, discard)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	replica.Start()
+	defer func() { _ = replica.Close() }()
+
+	if synced, _, _ := replica.Status(); synced {
+		t.Fatalf("reserva sincronizada antes de qualquer SYNC")
+	}
+
+	primary := replication.NewPrimary(replication.PrimaryConfig{Addr: replica.Addr().String(), Logger: discard})
+	primary.Start(memSource{records: [][]byte{[]byte("r1")}})
+	deadline := time.Now().Add(timeout)
+	for !primary.Synced() {
+		if time.Now().After(deadline) {
+			t.Fatalf("primario nao sincronizou")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	synced, applied, connected := replica.Status()
+	if !synced || !connected || applied != primary.Index() {
+		t.Fatalf("apos sync: synced=%v connected=%v applied=%d index=%d", synced, connected, applied, primary.Index())
+	}
+
+	before := primary.Index()
+	if err := primary.Replicate([]byte("r2")); err != nil {
+		t.Fatalf("Replicate: %v", err)
+	}
+	if _, applied, _ := replica.Status(); applied != primary.Index() || applied != before+1 {
+		t.Fatalf("applied=%d index=%d, esperado %d", applied, primary.Index(), before+1)
+	}
+
+	_ = primary.Close()
+	deadline = time.Now().Add(timeout)
+	for {
+		synced, _, connected := replica.Status()
+		if !connected {
+			if !synced {
+				t.Fatalf("a queda da conexao desfez a sincronizacao")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reserva nao percebeu a queda da conexao")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// Sem reserva, o registro só é confirmado com o aval de ConfirmAlone.
+func TestReplicateWithoutBackupAsksConfirmAlone(t *testing.T) {
+	var asked []uint64
+	refuse := errors.New("sem aval")
+	primary := replication.NewPrimary(replication.PrimaryConfig{
+		Addr:   "127.0.0.1:1",
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ConfirmAlone: func(index uint64) error {
+			asked = append(asked, index)
+			return refuse
+		},
+	})
+	start := primary.Index()
+	if err := primary.Replicate([]byte("r")); !errors.Is(err, refuse) {
+		t.Fatalf("Replicate = %v, esperado o erro de ConfirmAlone", err)
+	}
+	if len(asked) != 1 || asked[0] != start+1 || primary.Index() != start+1 {
+		t.Fatalf("asked=%v index=%d start=%d", asked, primary.Index(), start)
+	}
 }

@@ -35,6 +35,11 @@ func run(logger *slog.Logger) error {
 	replicaAddr := flag.String("replica-addr", "", "primario: endereco de replicacao da reserva (vazio = sem reserva)")
 	replicationAddr := flag.String("replication-addr", "", "reserva: endereco onde escuta a replicacao do primario")
 	replicaTimeout := flag.Duration("replica-timeout", replication.DefaultTimeout, "espera maxima pelo REPLICA_ACK da reserva")
+	brokerID := flag.String("id", "", "identificador do broker para o juiz (obrigatorio com -judge-addr)")
+	judgeAddr := flag.String("judge-addr", "", "endereco do juiz (vazio = sem juiz e sem failover)")
+	heartbeat := flag.Duration("heartbeat-interval", broker.DefaultHeartbeatInterval, "periodo do HEARTBEAT ao juiz")
+	fenceTimeout := flag.Duration("fence-timeout", broker.DefaultFenceTimeout,
+		"espera pelo aval do juiz sem reserva antes de se isolar (use menor que o -failure-timeout do juiz)")
 	metricsAddr := flag.String("metrics-addr", "", "endereco HTTP do /metrics (vazio = desligado)")
 	flag.Parse()
 
@@ -52,6 +57,10 @@ func run(logger *slog.Logger) error {
 		ReplicaAddr:          *replicaAddr,
 		ReplicationAddr:      *replicationAddr,
 		ReplicaTimeout:       *replicaTimeout,
+		BrokerID:             *brokerID,
+		JudgeAddr:            *judgeAddr,
+		HeartbeatInterval:    *heartbeat,
+		FenceTimeout:         *fenceTimeout,
 		Logger:               logger,
 	})
 

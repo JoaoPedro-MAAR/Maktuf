@@ -97,6 +97,20 @@ func newBrokerMetrics(reg *metrics.Registry, s *Server) *brokerMetrics {
 		nil, func() []metrics.Sample {
 			return []metrics.Sample{{Value: float64(s.ReplicaDesyncs())}}
 		})
+	reg.NewGaugeFunc("broker_state",
+		"Estado anunciado ao Juiz: 1 primario, 2 reserva sincronizada, 3 reserva sincronizando, 4 isolado.",
+		nil, func() []metrics.Sample {
+			state, _ := s.heartbeatState()
+			return []metrics.Sample{{Value: float64(state)}}
+		})
+	reg.NewGaugeFunc("judge_connected", "1 quando o Juiz respondeu dentro do prazo de isolamento.",
+		nil, func() []metrics.Sample {
+			v := 0.0
+			if s.judge != nil && s.judge.connected() {
+				v = 1
+			}
+			return []metrics.Sample{{Value: v}}
+		})
 	return m
 }
 

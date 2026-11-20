@@ -451,6 +451,10 @@ As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
    replay; transição sem inscritos é descartada.
 5. Qual é o limite máximo de tamanho de mensagem e de buffer por sensor?
 6. O Juiz deve ser replicado para eliminar o ponto único de falha na coordenação?
+   **Resolvido:** não nesta versão. Há 1 Juiz (DP-12); ele é ponto único de
+   falha da coordenação, não dos dados: sem o Juiz os brokers seguem
+   atendendo e o failover fica suspenso até ele voltar (RF-48). Ver
+   [ressalvas](../ressalvas.md).
 7. A garantia "pelo menos uma vez" se aplica também a mensagens de status ou apenas às leituras de temperatura?
    **Resolvido:** aplica-se também às transições de status. Elas usam o mesmo
    store e as mesmas filas/cursor dos assinantes, com um fluxo de `seq` separado

@@ -117,6 +117,42 @@ func (s SensorState) String() string {
 	}
 }
 
+// BrokerState é o campo state do HEARTBEAT (task 012). O valor zero é usado
+// pelo Juiz no eco do heartbeat.
+type BrokerState uint8
+
+const (
+	BrokerStateUnknown BrokerState = 0
+	// BrokerStatePrimary atende clientes.
+	BrokerStatePrimary BrokerState = 1
+	// BrokerStateBackupSynced é a reserva com o estado completo do primário.
+	BrokerStateBackupSynced BrokerState = 2
+	// BrokerStateBackupSyncing é a reserva sem sincronização válida; não pode
+	// ser promovida.
+	BrokerStateBackupSyncing BrokerState = 3
+	// BrokerStateFenced é o primário isolado: perdeu o Juiz e a reserva, ou
+	// o Juiz indicou outro primário, e deixou de atender clientes.
+	BrokerStateFenced BrokerState = 4
+)
+
+func (s BrokerState) String() string {
+	switch s {
+	case BrokerStatePrimary:
+		return "primario"
+	case BrokerStateBackupSynced:
+		return "reserva_sincronizada"
+	case BrokerStateBackupSyncing:
+		return "reserva_sincronizando"
+	case BrokerStateFenced:
+		return "isolado"
+	default:
+		return "desconhecido"
+	}
+}
+
+// JudgeID é o broker_id que o Juiz usa no eco do HEARTBEAT.
+const JudgeID = "juiz"
+
 type Role uint8
 
 const (

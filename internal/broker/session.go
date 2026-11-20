@@ -65,9 +65,10 @@ func (s *session) serve(ctx context.Context) {
 		return
 	}
 
-	if s.server.cfg.Role == RoleBackup {
-		// A reserva só atende clientes depois de promovida (task 012).
-		log.Info("CONNECT recusado: broker reserva")
+	if !s.server.acceptingClients() {
+		// A reserva só atende clientes depois de promovida, e o primário
+		// isolado deixa de atender (task 012).
+		log.Info("CONNECT recusado", "broker_role", string(s.server.Role()), "fenced", s.server.fenced.Load())
 		_ = s.write(&protocol.ConnAck{Status: protocol.StatusTemporaryFailure})
 		return
 	}

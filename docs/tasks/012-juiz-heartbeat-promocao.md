@@ -65,6 +65,24 @@ Ajustar:
 3. **Critério de sincronizado:** comparar `last_seq` global, por sensor ou por
    outro marcador do store.
 
+### Decisões tomadas
+
+1. **Resolvido:** 1 Juiz, com o ponto único de falha da coordenação registrado
+   em `docs/ressalvas.md`.
+2. **Resolvido:** `state` = `1` primário, `2` reserva sincronizada, `3` reserva
+   sem sincronização válida e `4` primário isolado. `0` só no eco do Juiz.
+3. **Resolvido:** critério pelo índice de replicação (`last_seq`), que começa
+   no relógio do primário e avança a cada registro gravado. A reserva é
+   promovida só com `state = 2` e índice maior ou igual ao último do primário.
+4. **Anti split-brain:**
+   - o Juiz ecoa cada `HEARTBEAT`;
+   - o primário só confirma escritas sem reserva com o eco do Juiz e se isola
+     sem ele;
+   - a reserva recusa `PROMOTE` enquanto o primário replica nela;
+   - `PROMOTE(outro id)` isola um primário deposto.
+
+   Detalhes em `docs/protocolo.md`, seção 10.
+
 ## Critérios de aceitação
 
 - [ ] Ausência de heartbeat do primário dentro do prazo dispara a avaliação de
