@@ -176,12 +176,13 @@ nesse intervalo, de milissegundos, não ficam no primário ativo. Como a reserva
 só aceita o `PROMOTE` sem conexão de replicação aberta, isso exige o primário
 isolado de todos e voltando exatamente durante a promoção.
 
-## A nova primária roda sem reserva
+## Até o antigo primário voltar, a nova primária roda sem reserva
 
-Depois do failover, a reserva promovida atende sozinha e sem o modo de aval do
-Juiz, porque não tem reserva própria configurada. O retorno do antigo
-primário como reserva e a nova sincronização são da task 014. O antigo
-primário, se voltar, recebe `PROMOTE(novo)` e permanece isolado até lá.
+Depois do failover, a reserva promovida atende sozinha enquanto o antigo
+primário não volta. Com Juiz e endereço do par configurados, cada escrita
+nesse intervalo depende do aval do Juiz, como no primário original. Quando o
+antigo primário volta, ele vira reserva e é ressincronizado por completo
+(task 014, docs/protocolo.md, seção 10).
 
 ## O vip simula o endereço virtual (task 013)
 
@@ -216,3 +217,28 @@ Medido com os padrões, matando o primário com `kill -9`: **6,7 s**. No teste
 automático, com prazos curtos, cerca de 0,35 s. Um isolamento longo faz o
 backoff do cliente crescer; reduzir `ReconnectOptions.MaxDelay` encurta a
 volta ao custo de mais tentativas.
+
+## Replicação por par (task 014)
+
+A replicação liga um primário a uma única reserva: cada broker conhece o
+próprio endereço de replicação e o do par (DP-12; a escalabilidade horizontal
+está fora de escopo, requisitos.md, seção 1.5). A biblioteca cliente, o vip e
+o Juiz já lidam com N brokers; só a replicação teria de mudar para N reservas,
+trocando o endereço do par por uma lista e esperando a confirmação de todas
+(ou de uma maioria) antes do ACK.
+
+## Reinício simultâneo de todos os componentes
+
+O Juiz não guarda estado em disco. Se Juiz e brokers reiniciarem juntos, nenhum
+broker anuncia `state = 1` e o Juiz adota o primeiro broker em `state = 4`, que
+pode ser o de dados mais antigos; o outro é rebaixado e ressincronizado a
+partir dele, perdendo o que só ele tinha. Procedimento: subir primeiro o
+broker que era o último primário e esperar o Juiz promovê-lo antes de subir o
+outro.
+
+## Broker reiniciado com o Juiz fora
+
+Com Juiz configurado, um broker que sobe como primário só atende depois do
+`PROMOTE` (ou da reserva sincronizar nele). Com o Juiz fora e sem reserva
+disponível, ele fica sem atender até o Juiz voltar: é o preço de nunca haver
+dois primários. Um broker que já estava atendendo continua atendendo.

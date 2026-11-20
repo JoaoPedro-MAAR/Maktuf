@@ -112,6 +112,13 @@ func (m *statusManager) publishLocked(sensorID string, state protocol.SensorStat
 		"sensor_id", sensorID, "state", state.String(), "subscribers", subscribers)
 }
 
+// reset esquece estados e prazos de sono (task 014).
+func (m *statusManager) reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.states = make(map[string]sensorStatus)
+}
+
 // counts devolve quantos sensores conhecidos estão em cada estado.
 func (m *statusManager) counts() map[protocol.SensorState]int {
 	m.mu.Lock()

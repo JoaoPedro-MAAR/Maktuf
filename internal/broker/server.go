@@ -116,7 +116,6 @@ type Server struct {
 	status     *statusManager
 	monitor    *monitor
 	store      *store
-	primary    *replication.Primary
 	registry   *metrics.Registry
 	metrics    *brokerMetrics
 	wg         sync.WaitGroup
@@ -125,10 +124,12 @@ type Server struct {
 	// Estado de alta disponibilidade (task 012). O papel muda de reserva
 	// para primário na promoção; haMu serializa a promoção e o acesso à
 	// reserva.
-	role    atomic.Value
-	fenced  atomic.Bool
-	deposed atomic.Bool
-	judge   *judgeLink
+	role   atomic.Value
+	fenced atomic.Bool
+	judge  *judgeLink
+	// primary é o link de replicação para o par. Nasce no Listen (primário
+	// com ReplicaAddr) ou na promoção e some no rebaixamento (task 014).
+	primary atomic.Pointer[replication.Primary]
 	haMu    sync.Mutex
 	replica *replication.Replica
 }
@@ -231,19 +232,38 @@ func (s *Server) Listen() error {
 	}
 	s.listener = ln
 	if s.cfg.Role == RolePrimary && s.cfg.ReplicaAddr != "" {
-		pcfg := replication.PrimaryConfig{
-			Addr:    s.cfg.ReplicaAddr,
-			Timeout: s.cfg.ReplicaTimeout,
-			Logger:  s.log,
-		}
-		if s.judge != nil {
-			pcfg.ConfirmAlone = s.judge.confirmAlone
-			pcfg.OnChange = s.replicaChanged
-		}
-		s.primary = replication.NewPrimary(pcfg)
-		s.store.replicator = s.primary
+		p := s.newPrimaryLink()
+		s.primary.Store(p)
+		s.store.replicator = p
+	}
+	if s.cfg.Role == RolePrimary && s.judge != nil {
+		// Nenhum broker vira primário sozinho ao subir: ele espera o
+		// PROMOTE do Juiz (ou a reserva sincronizar nele, o que prova que ela
+		// não é primária). Fecha a janela de dois primários no reinício.
+		s.fenced.Store(true)
+		s.log.Info("aguardando o juiz para atender clientes", "broker_id", s.cfg.BrokerID)
 	}
 	return nil
+}
+
+// newPrimaryLink cria o link de replicação para o par (cfg.ReplicaAddr).
+// Com Juiz, o modo sem reserva depende do aval dele.
+func (s *Server) newPrimaryLink() *replication.Primary {
+	pcfg := replication.PrimaryConfig{
+		Addr:    s.cfg.ReplicaAddr,
+		Timeout: s.cfg.ReplicaTimeout,
+		Logger:  s.log,
+	}
+	if s.judge != nil {
+		pcfg.ConfirmAlone = s.judge.confirmAlone
+		pcfg.OnChange = s.replicaChanged
+	}
+	return replication.NewPrimary(pcfg)
+}
+
+// currentPrimary devolve o link de replicação atual, ou nil.
+func (s *Server) currentPrimary() *replication.Primary {
+	return s.primary.Load()
 }
 
 func (s *Server) validate() error {
@@ -346,8 +366,8 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	s.scheduler.start()
 	s.monitor.start()
-	if s.primary != nil {
-		s.primary.Start(replicaSource{s.store})
+	if p := s.currentPrimary(); p != nil {
+		p.Start(replicaSource{s.store})
 	}
 	if s.replica != nil {
 		s.replica.Start()
@@ -395,10 +415,10 @@ func (s *Server) shutdown() error {
 	s.scheduler.close()
 	s.monitor.close()
 	s.deliveries.wait()
-	if s.primary != nil {
-		_ = s.primary.Close()
-	}
 	s.haMu.Lock()
+	if p := s.primary.Swap(nil); p != nil {
+		_ = p.Close()
+	}
 	if s.replica != nil {
 		_ = s.replica.Close()
 		s.replica = nil
@@ -415,15 +435,17 @@ func (s *Server) Role() Role {
 // ReplicaSynced informa se a reserva está sincronizada com este primário.
 // Falso sem reserva configurada ou fora do papel de primário.
 func (s *Server) ReplicaSynced() bool {
-	return s.primary != nil && s.primary.Synced()
+	p := s.currentPrimary()
+	return p != nil && p.Synced()
 }
 
 // ReplicaDesyncs conta quantas vezes a reserva deixou de estar sincronizada.
 func (s *Server) ReplicaDesyncs() uint64 {
-	if s.primary == nil {
+	p := s.currentPrimary()
+	if p == nil {
 		return 0
 	}
-	return s.primary.Desyncs()
+	return p.Desyncs()
 }
 
 // ReplicationAddr devolve o endereço de replicação da reserva; nil fora do

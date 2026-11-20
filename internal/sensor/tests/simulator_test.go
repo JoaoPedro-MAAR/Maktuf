@@ -150,6 +150,13 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// connectedAll diz que todos os sensores já conectaram. Measured sobe antes
+// da conexão, então parar só por Measured cancelaria conexões em andamento e
+// deixaria o backlog sem drenar.
+func connectedAll(s sensor.Stats, cfg sensor.Config) bool {
+	return s.Connects >= uint64(cfg.Count) && s.Measured >= uint64(cfg.Count)
+}
+
 func baseConfig(t *testing.T, addr string) sensor.Config {
 	return sensor.Config{
 		Addr:               addr,
@@ -249,7 +256,7 @@ func TestReadingsSurviveSimulatorRestartWhileBrokerIsDown(t *testing.T) {
 	cons := startConsumer(t, addr)
 
 	previous := st.Measured
-	online := runSimulator(t, cfg, func(s sensor.Stats) bool { return s.Measured >= 3 })
+	online := runSimulator(t, cfg, func(s sensor.Stats) bool { return connectedAll(s, cfg) })
 	if st := online.Stats(); st.Pending != 0 {
 		t.Fatalf("backlog nao drenou: %+v", st)
 	}
@@ -277,7 +284,7 @@ func TestSimulatedFailuresLoseNothing(t *testing.T) {
 	// Leituras medidas durante o downtime ficam no buffer até a próxima
 	// conexão; roda de novo para drenar.
 	cfg.FailureProb = 0
-	drain := runSimulator(t, cfg, func(s sensor.Stats) bool { return s.Measured >= 3 })
+	drain := runSimulator(t, cfg, func(s sensor.Stats) bool { return connectedAll(s, cfg) })
 	if st := drain.Stats(); st.Pending != 0 {
 		t.Fatalf("backlog nao drenou: %+v", st)
 	}

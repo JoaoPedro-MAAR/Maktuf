@@ -184,6 +184,18 @@ func (q *subscriberQueue) attach(conn deliveryConn) chan struct{} {
 	return q.stop
 }
 
+// stopDelivery encerra o laço de entrega da fila, qualquer que seja a sessão
+// dona.
+func (q *subscriberQueue) stopDelivery() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.stop != nil {
+		close(q.stop)
+	}
+	q.owner = nil
+	q.stop = nil
+}
+
 func (q *subscriberQueue) detach(conn deliveryConn) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -257,6 +269,19 @@ func newDeliveryManager(st *store, log *slog.Logger, limit int) *DeliveryManager
 		store:  st,
 		limit:  limit,
 		log:    log,
+	}
+}
+
+// reset descarta todas as filas e cursores em memória e encerra os laços de
+// entrega. Usado quando o broker muda de papel (task 014); o estado volta
+// do store com restore.
+func (m *DeliveryManager) reset() {
+	m.mu.Lock()
+	old := m.queues
+	m.queues = make(map[string]*subscriberQueue)
+	m.mu.Unlock()
+	for _, q := range old {
+		q.stopDelivery()
 	}
 }
 

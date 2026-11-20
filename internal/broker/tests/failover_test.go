@@ -376,8 +376,8 @@ func TestBackupRefusesPromotionWhilePrimaryIsConnected(t *testing.T) {
 	}
 }
 
-// PROMOTE(outro id) isola o primário; PROMOTE(próprio id) o reativa.
-func TestDeposedPrimaryStopsServing(t *testing.T) {
+// Task 014: com Juiz, o primário sobe sem atender e espera o PROMOTE.
+func TestPrimaryWaitsForJudgeBeforeServing(t *testing.T) {
 	fj := startFakeJudge(t)
 	primary := startServerWithConfig(t, broker.Config{
 		BrokerID:          "p",
@@ -385,19 +385,9 @@ func TestDeposedPrimaryStopsServing(t *testing.T) {
 		HeartbeatInterval: heartbeatTick,
 	})
 	conn, states := fj.accept(t)
-	waitState(t, states, protocol.BrokerStatePrimary)
-
-	consumer := connectAs(t, primary.addr, protocol.RoleConsumer, "c1")
-	if err := protocol.WriteMessage(conn, &protocol.Promote{BrokerID: "outro"}); err != nil {
-		t.Fatalf("PROMOTE: %v", err)
-	}
 	waitState(t, states, protocol.BrokerStateFenced)
-	_ = consumer.conn.SetReadDeadline(time.Now().Add(timeout))
-	if _, err := protocol.ReadMessage(consumer.r); err == nil {
-		t.Fatalf("sessao do consumidor deveria ter sido encerrada")
-	}
 	if got := tryConnect(t, primary.addr, protocol.RoleConsumer, "c1"); got != protocol.StatusTemporaryFailure {
-		t.Fatalf("primario deposto aceitou CONNECT: %v", got)
+		t.Fatalf("primario atendeu antes do juiz: %v", got)
 	}
 
 	if err := protocol.WriteMessage(conn, &protocol.Promote{BrokerID: "p"}); err != nil {
@@ -405,6 +395,121 @@ func TestDeposedPrimaryStopsServing(t *testing.T) {
 	}
 	waitState(t, states, protocol.BrokerStatePrimary)
 	if got := tryConnect(t, primary.addr, protocol.RoleConsumer, "c1"); got != protocol.StatusOK {
-		t.Fatalf("primario reativado recusou CONNECT: %v", got)
+		t.Fatalf("primario promovido recusou CONNECT: %v", got)
 	}
+}
+
+// Task 014: PROMOTE(outro id) transforma o primário em reserva, que para de
+// atender e abre o endereço de replicação.
+func TestDeposedPrimaryBecomesBackup(t *testing.T) {
+	fj := startFakeJudge(t)
+	replAddr := freeAddr(t)
+	primary := startServerWithConfig(t, broker.Config{
+		BrokerID:          "p",
+		DataDir:           t.TempDir(),
+		ReplicationAddr:   replAddr,
+		JudgeAddr:         fj.ln.Addr().String(),
+		HeartbeatInterval: heartbeatTick,
+	})
+	conn, states := fj.accept(t)
+	if err := protocol.WriteMessage(conn, &protocol.Promote{BrokerID: "p"}); err != nil {
+		t.Fatalf("PROMOTE: %v", err)
+	}
+	waitState(t, states, protocol.BrokerStatePrimary)
+	consumer := connectAs(t, primary.addr, protocol.RoleConsumer, "c1")
+
+	if err := protocol.WriteMessage(conn, &protocol.Promote{BrokerID: "outro"}); err != nil {
+		t.Fatalf("PROMOTE: %v", err)
+	}
+	waitState(t, states, protocol.BrokerStateBackupSyncing)
+	if primary.srv.Role() != broker.RoleBackup {
+		t.Fatalf("papel = %s, esperado reserva", primary.srv.Role())
+	}
+	_ = consumer.conn.SetReadDeadline(time.Now().Add(timeout))
+	if _, err := protocol.ReadMessage(consumer.r); err == nil {
+		t.Fatalf("sessao do consumidor deveria ter sido encerrada")
+	}
+	if got := tryConnect(t, primary.addr, protocol.RoleConsumer, "c1"); got != protocol.StatusTemporaryFailure {
+		t.Fatalf("reserva aceitou CONNECT: %v", got)
+	}
+	waitUntil(t, "endereco de replicacao aberto", func() bool {
+		c, err := net.DialTimeout("tcp", replAddr, timeout)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
+	})
+}
+
+// Task 014 / RF-47: o antigo primário volta como reserva, é ressincronizado
+// pela primária atual e um segundo failover não perde leituras.
+func TestOldPrimaryRejoinsAsBackup(t *testing.T) {
+	judge := startJudge(t, "127.0.0.1:0")
+	pRepl, rRepl := freeAddr(t), freeAddr(t)
+	pDir := t.TempDir()
+	ha := func(id, own, peer, dir string, role broker.Role) broker.Config {
+		return broker.Config{
+			Role: role, BrokerID: id, DataDir: dir,
+			ReplicationAddr: own, ReplicaAddr: peer, ReplicaTimeout: 500 * time.Millisecond,
+			JudgeAddr: judge.addr, HeartbeatInterval: heartbeatTick, FenceTimeout: fenceTimeout,
+		}
+	}
+	r := startServerWithConfig(t, ha("r", rRepl, pRepl, t.TempDir(), broker.RoleBackup))
+	p := startServerWithConfig(t, ha("p", pRepl, rRepl, pDir, broker.RolePrimary))
+	waitUntil(t, "reserva sincronizada", p.srv.ReplicaSynced)
+	time.Sleep(judgeFailure + 2*judgeCheck)
+
+	consumer := connectAs(t, p.addr, protocol.RoleConsumer, "c1")
+	consumer.subscribe(t, sensorTopic)
+	sensor := connectAs(t, p.addr, protocol.RoleSensor, "a")
+	sensor.publish(t, reading(1))
+	consumer.ackDeliver(t, consumer.readDeliver(t))
+	waitMetric(t, p.srv, "messages_delivered_total", 1)
+
+	// 1º failover: P cai, R assume e confirma sozinho com o aval do Juiz.
+	p.stop(t)
+	waitUntil(t, "promocao de R", func() bool { return r.srv.Role() == broker.RolePrimary })
+	c2 := connectAs(t, r.addr, protocol.RoleConsumer, "c1")
+	s2 := connectAs(t, r.addr, protocol.RoleSensor, "a")
+	if ack := s2.publish(t, reading(2)); ack.Status != protocol.StatusPersisted {
+		t.Fatalf("seq 2 em R: %v", ack.Status)
+	}
+	c2.ackDeliver(t, expectSeq(t, c2, 2))
+
+	// P volta com o mesmo diretório e as mesmas flags: vira reserva.
+	p2 := startServerWithConfig(t, ha("p", pRepl, rRepl, pDir, broker.RolePrimary))
+	waitUntil(t, "P como reserva", func() bool { return p2.srv.Role() == broker.RoleBackup })
+	waitUntil(t, "R sincronizada com P", r.srv.ReplicaSynced)
+	if got := tryConnect(t, p2.addr, protocol.RoleSensor, "a"); got != protocol.StatusTemporaryFailure {
+		t.Fatalf("antigo primario aceitou CONNECT: %v", got)
+	}
+	if ack := s2.publish(t, reading(3)); ack.Status != protocol.StatusPersisted {
+		t.Fatalf("seq 3 em R: %v", ack.Status)
+	}
+	c2.ackDeliver(t, expectSeq(t, c2, 3))
+	waitMetric(t, r.srv, "messages_delivered_total", 2)
+
+	// 2º failover: R cai, P assume com tudo que R confirmou.
+	r.stop(t)
+	waitUntil(t, "promocao de P", func() bool { return p2.srv.Role() == broker.RolePrimary })
+	c3 := connectAs(t, p2.addr, protocol.RoleConsumer, "c1")
+	s3 := connectAs(t, p2.addr, protocol.RoleSensor, "a")
+	if ack := s3.publish(t, reading(3)); ack.Status != protocol.StatusPersisted {
+		t.Fatalf("seq 3 repetido em P: %v", ack.Status)
+	}
+	if ack := s3.publish(t, reading(4)); ack.Status != protocol.StatusPersisted {
+		t.Fatalf("seq 4 em P: %v", ack.Status)
+	}
+	// Seq 2 e 3 já confirmados pelo consumidor em R não voltam; só o 4.
+	expectSeq(t, c3, 4)
+}
+
+func expectSeq(t *testing.T, c *peer, want uint64) *protocol.Deliver {
+	t.Helper()
+	d := c.readDeliver(t)
+	if d.Seq != want {
+		t.Fatalf("seq = %d, esperado %d", d.Seq, want)
+	}
+	return d
 }

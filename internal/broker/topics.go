@@ -90,6 +90,14 @@ func (m *TopicManager) HasTopic(filter string) bool {
 	return ok
 }
 
+// reset esquece todos os tópicos. Usado quando o broker muda de papel e o
+// estado em memória deixa de valer (task 014).
+func (m *TopicManager) reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.topics = make(map[string]map[string]struct{})
+}
+
 // SubscriptionCounts devolve quantos inscritos tem cada tópico (filtro).
 func (m *TopicManager) SubscriptionCounts() map[string]int {
 	m.mu.RLock()

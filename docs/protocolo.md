@@ -446,7 +446,33 @@ primário estiver aberta (o primário está vivo, por exemplo numa partição s�
 entre Juiz e primário). O Juiz repete o `PROMOTE` a cada período. Ao aceitar,
 a reserva fecha o endereço de replicação, monta em memória o estado do store e
 passa a aceitar `CONNECT` e a anunciar `state = 1`; nesse momento o Juiz
-considera o failover concluído.
+considera o failover concluído. Se tiver o endereço de replicação do par, a
+nova primária passa a tentar replicar para ele, com backoff, até ele voltar
+como reserva.
+
+### Início, rebaixamento e retorno do antigo primário
+
+Os dois brokers recebem as mesmas duas flags de replicação, invertidas: o
+próprio endereço (`-replication-addr`, usado como reserva) e o do par
+(`-replica-addr`, usado como primário). `-role` é só o papel inicial.
+
+- **Início:** com Juiz configurado, um broker que sobe como primário não
+  atende clientes; anuncia `state = 4` e espera `PROMOTE` com o próprio id.
+  Ele também passa a atender se a reserva sincronizar nele, o que prova que o
+  par não é primário.
+- **Rebaixamento:** um primário (atendendo, isolado ou aguardando) que recebe
+  `PROMOTE` com o id de outro broker vira **reserva**:
+  1. fecha as sessões e para de replicar;
+  2. descarta o estado em memória;
+  3. abre o próprio endereço de replicação e anuncia `state = 3`.
+- **Ressincronização:** a primária atual conecta e envia o estado completo
+  com o fluxo da seção 9 (`SYNC_START → RECORD… → SYNC_END`). A reserva
+  substitui todo o store pelo que recebeu, descartando o estado antigo, e
+  passa a anunciar `state = 2`. Daí em diante, recebe as réplicas
+  incrementais e pode ser promovida num novo failover.
+
+Assim, depois de um failover, o antigo primário volta como reserva sem
+intervenção manual além de reiniciá-lo com o mesmo comando (RF-47).
 
 ### Isolamento (anti split-brain)
 
@@ -455,10 +481,11 @@ O primário deixa de atender clientes (fecha as sessões e responde
 
 - a reserva está dessincronizada **e** o Juiz não dá o aval de uma escrita
   dentro do prazo de isolamento; ou
-- recebe `PROMOTE` com o id de outro broker (foi deposto).
+- acabou de subir e ainda espera o Juiz.
 
-Ele volta a atender quando recebe `PROMOTE` com o próprio id ou, se não foi
-deposto, quando a reserva volta a sincronizar. O Juiz envia `PROMOTE(ativo)`
+Ele volta a atender quando recebe `PROMOTE` com o próprio id ou quando a
+reserva volta a sincronizar. Um primário que recebe `PROMOTE` com o id de
+outro broker não fica isolado: vira reserva (subseção anterior). O Juiz envia `PROMOTE(ativo)`
 a todo broker que anuncie `state` 1 ou 4 sem ser o ativo, e `PROMOTE(ativo)`
 ao próprio ativo isolado.
 
