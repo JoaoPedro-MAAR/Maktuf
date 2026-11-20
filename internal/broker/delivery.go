@@ -3,6 +3,7 @@ package broker
 import (
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
 )
@@ -32,6 +33,21 @@ type subscriberQueue struct {
 	notify chan struct{}
 	owner  deliveryConn
 	stop   chan struct{}
+
+	// enqueued guarda quando cada leitura entrou na fila, para medir a
+	// latência até o primeiro envio. Fica limitado ao tamanho da fila e não é
+	// persistido: leituras restauradas do disco não entram na métrica.
+	enqueued map[deliverKey]time.Time
+	onSend   func(time.Duration)
+}
+
+type deliverKey struct {
+	stream string
+	seq    uint64
+}
+
+func keyOf(d *protocol.Deliver) deliverKey {
+	return deliverKey{stream: streamKey(d), seq: d.Seq}
 }
 
 func newSubscriberQueue(limit int) *subscriberQueue {
@@ -39,9 +55,10 @@ func newSubscriberQueue(limit int) *subscriberQueue {
 		limit = DefaultSubscriberQueueLimit
 	}
 	return &subscriberQueue{
-		limit:  limit,
-		cursor: make(cursor),
-		notify: make(chan struct{}, 1),
+		limit:    limit,
+		cursor:   make(cursor),
+		notify:   make(chan struct{}, 1),
+		enqueued: make(map[deliverKey]time.Time),
 	}
 }
 
@@ -63,9 +80,12 @@ func (q *subscriberQueue) push(d *protocol.Deliver) (bool, []*protocol.Deliver) 
 	}
 	var dropped []*protocol.Deliver
 	for q.q.len() >= q.limit && q.q.len() > 1 {
-		dropped = append(dropped, q.q.dropAt(1))
+		old := q.q.dropAt(1)
+		delete(q.enqueued, keyOf(old))
+		dropped = append(dropped, old)
 	}
 	q.q.push(d)
+	q.enqueued[keyOf(d)] = time.Now()
 	q.drops += uint64(len(dropped))
 	q.mu.Unlock()
 	q.signal()
@@ -107,9 +127,24 @@ func (q *subscriberQueue) ack(a *protocol.DeliverAck, persist func(stream string
 	return true, nil
 }
 
+// sent registra o primeiro envio da leitura e informa a latência desde que
+// ela entrou na fila. Reenvios não têm mais a chave e não são medidos.
+func (q *subscriberQueue) sent(d *protocol.Deliver) {
+	q.mu.Lock()
+	key := keyOf(d)
+	at, ok := q.enqueued[key]
+	delete(q.enqueued, key)
+	onSend := q.onSend
+	q.mu.Unlock()
+	if ok && onSend != nil {
+		onSend(time.Since(at))
+	}
+}
+
 func (q *subscriberQueue) restore(c cursor, rq *readingQueue) {
 	q.mu.Lock()
 	q.cursor = c
+	clear(q.enqueued)
 	if rq != nil {
 		q.q = *rq.clone()
 	} else {
@@ -174,6 +209,7 @@ func (q *subscriberQueue) run(conn deliveryConn, stop <-chan struct{}) {
 				conn.deliveryFailed(err)
 				return
 			}
+			q.sent(h)
 			inflight = h
 		}
 
@@ -196,6 +232,12 @@ type DeliveryManager struct {
 	limit  int
 	log    *slog.Logger
 	wg     sync.WaitGroup
+
+	// Ganchos de métricas, definidos antes de qualquer fila ser criada.
+	// onSend recebe a latência entre enfileirar e enviar o DELIVER; onAck é
+	// chamado a cada DELIVER_ACK aceito.
+	onSend func(time.Duration)
+	onAck  func()
 }
 
 // NewDeliveryManager cria um gerenciador apenas em memória.
@@ -224,6 +266,7 @@ func (m *DeliveryManager) queue(clientID string) *subscriberQueue {
 	q, ok := m.queues[clientID]
 	if !ok {
 		q = newSubscriberQueue(m.limit)
+		q.onSend = m.onSend
 		m.queues[clientID] = q
 	}
 	return q
@@ -248,9 +291,13 @@ func (m *DeliveryManager) Enqueue(clientID string, d *protocol.Deliver) (bool, e
 // Ack confirma a cabeça da fila do cliente e avança o cursor. ACK que não
 // corresponde à cabeça (duplicado ou desconhecido) é ignorado.
 func (m *DeliveryManager) Ack(clientID string, a *protocol.DeliverAck) (bool, error) {
-	return m.queue(clientID).ack(a, func(stream string) error {
+	ok, err := m.queue(clientID).ack(a, func(stream string) error {
 		return m.store.ack(clientID, stream, a.Seq)
 	})
+	if ok && m.onAck != nil {
+		m.onAck()
+	}
+	return ok, err
 }
 
 func (m *DeliveryManager) restore(st *storeState) {

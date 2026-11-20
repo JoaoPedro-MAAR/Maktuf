@@ -3,6 +3,7 @@ package broker
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
 )
@@ -15,6 +16,9 @@ type publishOutcome struct {
 type publishJob struct {
 	msg  *protocol.Publish
 	done chan publishOutcome
+	// received é quando o PUBLISH foi lido do socket, antes de esperar slot;
+	// base da métrica ack_latency_seconds.
+	received time.Time
 }
 
 // sensorQueue representa o fluxo de um sensor conectado: slots limita quantos

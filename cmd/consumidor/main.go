@@ -6,7 +6,9 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/broker"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/client"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/consumer"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/metrics"
 )
 
 func main() {
@@ -40,6 +43,7 @@ func run() error {
 	duration := flag.Duration("duration", 0, "tempo de execucao (0 = ate SIGINT/SIGTERM)")
 	report := flag.Duration("report", 10*time.Second, "intervalo do resumo periodico (0 = so no fim)")
 	debug := flag.Bool("debug", false, "loga cada leitura")
+	metricsAddr := flag.String("metrics-addr", "", "endereco HTTP do /metrics (vazio = desligado)")
 	flag.Parse()
 
 	for _, f := range strings.Split(*filters, ",") {
@@ -67,6 +71,18 @@ func run() error {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, *duration)
 		defer cancel()
+	}
+
+	if *metricsAddr != "" {
+		ln, err := net.Listen("tcp", *metricsAddr)
+		if err != nil {
+			return fmt.Errorf("endereco do -metrics-addr: %w", err)
+		}
+		go func() {
+			if err := metrics.Serve(ctx, ln, cons.Metrics(), logger); err != nil {
+				logger.Error("endpoint /metrics encerrou", "error", err)
+			}
+		}()
 	}
 
 	if *report > 0 {

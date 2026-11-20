@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/client"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/metrics"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/storage"
 )
 
@@ -109,7 +110,10 @@ type Config struct {
 	DrainTimeout time.Duration
 
 	Reconnect client.ReconnectOptions
-	Logger    *slog.Logger
+	// Metrics recebe as métricas do simulador. Nil cria um registro
+	// próprio, acessível por Simulator.Metrics.
+	Metrics *metrics.Registry
+	Logger  *slog.Logger
 }
 
 func (c Config) withDefaults() Config {
@@ -139,6 +143,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Logger == nil {
 		c.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	if c.Metrics == nil {
+		c.Metrics = metrics.NewRegistry()
 	}
 	return c
 }
@@ -259,7 +266,14 @@ func New(cfg Config) (*Simulator, error) {
 		return nil, err
 	}
 	cfg = cfg.withDefaults()
-	return &Simulator{cfg: cfg, specs: Specs(cfg)}, nil
+	s := &Simulator{cfg: cfg, specs: Specs(cfg)}
+	registerMetrics(cfg.Metrics, s)
+	return s, nil
+}
+
+// Metrics devolve o registro com as métricas do simulador.
+func (s *Simulator) Metrics() *metrics.Registry {
+	return s.cfg.Metrics
 }
 
 // Specs devolve os sensores simulados.
@@ -348,17 +362,39 @@ func (s *Simulator) Stats() Stats {
 		Sleeps:          s.stats.sleeps.Load(),
 		LateWakes:       s.stats.lateWakes.Load(),
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, b := range s.buffers {
-		bs := b.Stats()
-		st.Pending += bs.Pending
-		st.Dropped += bs.Dropped
-		// LastSeq é o total de leituras já geradas pelo sensor, inclusive em
-		// execuções anteriores do simulador.
-		st.Confirmed += bs.LastSeq - uint64(bs.Pending) - bs.Dropped
+	for _, b := range s.bufferStats() {
+		st.Pending += b.pending
+		st.Dropped += b.dropped
+		st.Confirmed += b.confirmed
 	}
 	return st
+}
+
+type sensorBufferStats struct {
+	id        string
+	pending   int
+	dropped   uint64
+	confirmed uint64
+}
+
+// bufferStats lê o buffer de cada sensor. Vazio antes de Run abrir os
+// buffers.
+func (s *Simulator) bufferStats() []sensorBufferStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]sensorBufferStats, len(s.buffers))
+	for i, b := range s.buffers {
+		bs := b.Stats()
+		out[i] = sensorBufferStats{
+			id:      s.specs[i].ID,
+			pending: bs.Pending,
+			dropped: bs.Dropped,
+			// LastSeq é o total de leituras já geradas pelo sensor, inclusive
+			// em execuções anteriores do simulador.
+			confirmed: bs.LastSeq - uint64(bs.Pending) - bs.Dropped,
+		}
+	}
+	return out
 }
 
 // simSensor é o laço de um sensor. Só a própria goroutine acessa seus campos.

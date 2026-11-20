@@ -112,6 +112,17 @@ func (m *statusManager) publishLocked(sensorID string, state protocol.SensorStat
 		"sensor_id", sensorID, "state", state.String(), "subscribers", subscribers)
 }
 
+// counts devolve quantos sensores conhecidos estão em cada estado.
+func (m *statusManager) counts() map[protocol.SensorState]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[protocol.SensorState]int, 3)
+	for _, st := range m.states {
+		out[st.state]++
+	}
+	return out
+}
+
 // stateOf devolve o estado atual; usado por métricas e testes.
 func (m *statusManager) stateOf(sensorID string) (protocol.SensorState, time.Time) {
 	m.mu.Lock()

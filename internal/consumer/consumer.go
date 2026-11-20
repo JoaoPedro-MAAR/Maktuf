@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/client"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/metrics"
 )
 
 const (
@@ -37,7 +38,10 @@ type Config struct {
 	// de conectado, a reconexão é da biblioteca (Reconnect).
 	RetryInterval time.Duration
 	Reconnect     client.ReconnectOptions
-	Logger        *slog.Logger
+	// Metrics recebe as métricas do consumidor. Nil cria um registro
+	// próprio, acessível por Consumer.Metrics.
+	Metrics *metrics.Registry
+	Logger  *slog.Logger
 }
 
 // Consumer recebe as leituras e as passa pelo Tracker.
@@ -45,6 +49,7 @@ type Consumer struct {
 	cfg     Config
 	log     *slog.Logger
 	tracker *Tracker
+	metrics *consumerMetrics
 	ready   chan struct{}
 }
 
@@ -65,13 +70,20 @@ func New(cfg Config) (*Consumer, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = metrics.NewRegistry()
+	}
 	return &Consumer{
 		cfg:     cfg,
 		log:     cfg.Logger.With("client_id", cfg.ClientID),
 		tracker: NewTracker(cfg.DedupWindow, cfg.LatencySamples),
+		metrics: newConsumerMetrics(cfg.Metrics),
 		ready:   make(chan struct{}),
 	}, nil
 }
+
+// Metrics devolve o registro com as métricas do consumidor.
+func (c *Consumer) Metrics() *metrics.Registry { return c.cfg.Metrics }
 
 // Ready é fechado quando todas as inscrições foram confirmadas pelo broker.
 func (c *Consumer) Ready() <-chan struct{} { return c.ready }
@@ -137,6 +149,7 @@ func (c *Consumer) connect(ctx context.Context) (*client.Client, bool) {
 
 func (c *Consumer) handle(m client.Message) {
 	obs := c.tracker.Observe(m, time.Now())
+	c.metrics.observe(obs, m.Status)
 	log := c.log.With("sensor_id", m.SensorID, "topic", m.Topic, "seq", m.Seq)
 
 	switch obs.Outcome {

@@ -90,6 +90,17 @@ func (m *TopicManager) HasTopic(filter string) bool {
 	return ok
 }
 
+// SubscriptionCounts devolve quantos inscritos tem cada tópico (filtro).
+func (m *TopicManager) SubscriptionCounts() map[string]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]int, len(m.topics))
+	for filter, subs := range m.topics {
+		out[filter] = len(subs)
+	}
+	return out
+}
+
 func (m *TopicManager) TopicCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

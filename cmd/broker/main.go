@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/broker"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/metrics"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/replication"
 )
 
@@ -32,6 +35,7 @@ func run(logger *slog.Logger) error {
 	replicaAddr := flag.String("replica-addr", "", "primario: endereco de replicacao da reserva (vazio = sem reserva)")
 	replicationAddr := flag.String("replication-addr", "", "reserva: endereco onde escuta a replicacao do primario")
 	replicaTimeout := flag.Duration("replica-timeout", replication.DefaultTimeout, "espera maxima pelo REPLICA_ACK da reserva")
+	metricsAddr := flag.String("metrics-addr", "", "endereco HTTP do /metrics (vazio = desligado)")
 	flag.Parse()
 
 	if *dataDir == "" {
@@ -53,6 +57,18 @@ func run(logger *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	if *metricsAddr != "" {
+		ln, err := net.Listen("tcp", *metricsAddr)
+		if err != nil {
+			return fmt.Errorf("endereco do -metrics-addr: %w", err)
+		}
+		go func() {
+			if err := metrics.Serve(ctx, ln, server.Metrics(), logger); err != nil {
+				logger.Error("endpoint /metrics encerrou", "error", err)
+			}
+		}()
+	}
 
 	return server.ListenAndServe(ctx)
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/metrics"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/replication"
 )
 
@@ -67,7 +68,10 @@ type Config struct {
 	// ReplicaTimeout limita a conexão com a reserva e a espera de cada
 	// REPLICA_ACK. Valores <= 0 usam replication.DefaultTimeout.
 	ReplicaTimeout time.Duration
-	Logger         *slog.Logger
+	// Metrics recebe as métricas do broker. Nil cria um registro próprio,
+	// acessível por Server.Metrics.
+	Metrics *metrics.Registry
+	Logger  *slog.Logger
 }
 
 // QueueStats expõe profundidade e descartes das filas para métricas e testes.
@@ -93,6 +97,8 @@ type Server struct {
 	store      *store
 	primary    *replication.Primary
 	replica    *replication.Replica
+	registry   *metrics.Registry
+	metrics    *brokerMetrics
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
 }
@@ -127,7 +133,10 @@ func NewServer(cfg Config) *Server {
 	deliveries := newDeliveryManager(st, cfg.Logger, cfg.SubscriberQueueLimit)
 	pub := newPublisher(topics, deliveries, st)
 	status := newStatusManager(cfg.StatusTolerance, pub.PublishStatus, cfg.Logger)
-	return &Server{
+	if cfg.Metrics == nil {
+		cfg.Metrics = metrics.NewRegistry()
+	}
+	s := &Server{
 		cfg:        cfg,
 		log:        cfg.Logger,
 		sessions:   make(map[*session]struct{}),
@@ -138,7 +147,18 @@ func NewServer(cfg Config) *Server {
 		status:     status,
 		monitor:    newMonitor(status, cfg.StatusScanInterval),
 		store:      st,
+		registry:   cfg.Metrics,
 	}
+	s.metrics = newBrokerMetrics(cfg.Metrics, s)
+	deliveries.onSend = s.metrics.deliverySent
+	deliveries.onAck = s.metrics.deliveryAcked
+	return s
+}
+
+// Metrics devolve o registro com as métricas do broker (seção 9 de
+// requisitos.md), para expor em /metrics.
+func (s *Server) Metrics() *metrics.Registry {
+	return s.registry
 }
 
 // Listen recupera o estado persistido em Config.DataDir e abre o socket. O
