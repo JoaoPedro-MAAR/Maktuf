@@ -64,6 +64,13 @@ func (s *session) serve(ctx context.Context) {
 		return
 	}
 
+	if s.server.cfg.Role == RoleBackup {
+		// A reserva só atende clientes depois de promovida (task 012).
+		log.Info("CONNECT recusado: broker reserva")
+		_ = s.write(&protocol.ConnAck{Status: protocol.StatusTemporaryFailure})
+		return
+	}
+
 	if err := s.write(&protocol.ConnAck{Status: protocol.StatusOK}); err != nil {
 		log.Warn("falha ao enviar CONNACK", "error", err)
 		return

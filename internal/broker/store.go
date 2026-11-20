@@ -217,6 +217,14 @@ type store struct {
 	state      *storeState
 	threshold  int
 	minCompact int
+	// replicator, quando presente, recebe cada registro depois da gravação
+	// local e antes de write retornar (RF-41). Roda sob mu, o que preserva na
+	// reserva a ordem dos registros do primário.
+	replicator replicator
+}
+
+type replicator interface {
+	Replicate(record []byte)
 }
 
 // openStore abre o store em dir e devolve o estado recuperado. dir vazio
@@ -311,9 +319,68 @@ func (s *store) write(rec storeRecord) error {
 		return fmt.Errorf("broker: persistir %s: %w", rec.kind, err)
 	}
 	s.state.apply(rec)
+	if s.replicator != nil {
+		s.replicator.Replicate(raw)
+	}
+	return s.maybeCompactLocked()
+}
+
+func (s *store) maybeCompactLocked() error {
 	if s.log.Records() >= s.threshold {
 		return s.compact()
 	}
+	return nil
+}
+
+// replicaSource expõe o store do primário à replicação.
+type replicaSource struct{ s *store }
+
+// Snapshot entrega o estado vivo sob o lock de escrita: nenhum registro é
+// gravado nem replicado enquanto a reserva é sincronizada.
+func (r replicaSource) Snapshot(fn func(records [][]byte) error) error {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	return fn(r.s.state.snapshot())
+}
+
+// replicaTarget expõe o store da reserva à replicação.
+type replicaTarget struct{ s *store }
+
+// Apply grava e aplica um registro recebido do primário.
+func (r replicaTarget) Apply(raw []byte) error {
+	rec, err := decodeStoreRecord(raw)
+	if err != nil {
+		return err
+	}
+	s := r.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.log.Append(raw); err != nil {
+		return fmt.Errorf("broker: persistir replica %s: %w", rec.kind, err)
+	}
+	s.state.apply(rec)
+	return s.maybeCompactLocked()
+}
+
+// Reset troca todo o estado pelo enviado pelo primário numa sincronização.
+// Os registros são validados antes de tocar o disco.
+func (r replicaTarget) Reset(records [][]byte) error {
+	st := newStoreState()
+	for i, raw := range records {
+		rec, err := decodeStoreRecord(raw)
+		if err != nil {
+			return fmt.Errorf("broker: registro %d da sincronizacao: %w", i, err)
+		}
+		st.apply(rec)
+	}
+	s := r.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.log.Rewrite(records); err != nil {
+		return fmt.Errorf("broker: gravar sincronizacao: %w", err)
+	}
+	s.state = st
+	s.threshold = max(2*len(records), s.minCompact)
 	return nil
 }
 

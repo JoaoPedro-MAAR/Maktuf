@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/broker"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/replication"
 )
 
 func main() {
@@ -27,6 +28,10 @@ func run(logger *slog.Logger) error {
 	subscriberQueue := flag.Int("subscriber-queue", broker.DefaultSubscriberQueueLimit, "retencao de leituras por assinante")
 	statusTolerance := flag.Duration("status-tolerance", broker.DefaultStatusTolerance, "tolerancia somada ao prazo do SLEEP")
 	statusScan := flag.Duration("status-scan", broker.DefaultStatusScanInterval, "intervalo do monitor de prazos de sono")
+	role := flag.String("role", string(broker.RolePrimary), "papel do broker: primario ou reserva")
+	replicaAddr := flag.String("replica-addr", "", "primario: endereco de replicacao da reserva (vazio = sem reserva)")
+	replicationAddr := flag.String("replication-addr", "", "reserva: endereco onde escuta a replicacao do primario")
+	replicaTimeout := flag.Duration("replica-timeout", replication.DefaultTimeout, "espera maxima pelo REPLICA_ACK da reserva")
 	flag.Parse()
 
 	if *dataDir == "" {
@@ -39,6 +44,10 @@ func run(logger *slog.Logger) error {
 		SubscriberQueueLimit: *subscriberQueue,
 		StatusTolerance:      *statusTolerance,
 		StatusScanInterval:   *statusScan,
+		Role:                 broker.Role(*role),
+		ReplicaAddr:          *replicaAddr,
+		ReplicationAddr:      *replicationAddr,
+		ReplicaTimeout:       *replicaTimeout,
 		Logger:               logger,
 	})
 

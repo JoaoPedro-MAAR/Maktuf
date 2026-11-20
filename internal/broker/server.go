@@ -3,10 +3,13 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/replication"
 )
 
 const (
@@ -19,9 +22,21 @@ const (
 	DefaultSubscriberQueueLimit = 10000
 )
 
+// Role é o papel do broker no par replicado (DP-12).
+type Role string
+
+const (
+	// RolePrimary atende clientes e replica o store na reserva.
+	RolePrimary Role = "primario"
+	// RoleBackup só recebe a replicação e recusa clientes até ser promovida.
+	RoleBackup Role = "reserva"
+)
+
 var (
 	errNotListening = errors.New("broker: servidor nao esta escutando")
 	errQueueLimit   = errors.New("broker: limite da fila do assinante deve ser >= 2")
+	errInvalidRole  = errors.New("broker: papel invalido")
+	errReplication  = errors.New("broker: configuracao de replicacao invalida")
 )
 
 type Config struct {
@@ -42,7 +57,17 @@ type Config struct {
 	// StatusScanInterval é o período do monitor de prazos de sono. Valores <= 0
 	// usam DefaultStatusScanInterval.
 	StatusScanInterval time.Duration
-	Logger             *slog.Logger
+	// Role é o papel do broker. Vazio equivale a RolePrimary.
+	Role Role
+	// ReplicaAddr é o endereço de replicação da reserva, usado pelo primário.
+	// Vazio desliga a replicação (broker sozinho).
+	ReplicaAddr string
+	// ReplicationAddr é onde a reserva escuta a replicação do primário.
+	ReplicationAddr string
+	// ReplicaTimeout limita a conexão com a reserva e a espera de cada
+	// REPLICA_ACK. Valores <= 0 usam replication.DefaultTimeout.
+	ReplicaTimeout time.Duration
+	Logger         *slog.Logger
 }
 
 // QueueStats expõe profundidade e descartes das filas para métricas e testes.
@@ -66,6 +91,8 @@ type Server struct {
 	status     *statusManager
 	monitor    *monitor
 	store      *store
+	primary    *replication.Primary
+	replica    *replication.Replica
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
 }
@@ -89,6 +116,12 @@ func NewServer(cfg Config) *Server {
 	if cfg.StatusScanInterval <= 0 {
 		cfg.StatusScanInterval = DefaultStatusScanInterval
 	}
+	if cfg.Role == "" {
+		cfg.Role = RolePrimary
+	}
+	if cfg.ReplicaTimeout <= 0 {
+		cfg.ReplicaTimeout = replication.DefaultTimeout
+	}
 	st := &store{}
 	topics := NewTopicManager()
 	deliveries := newDeliveryManager(st, cfg.Logger, cfg.SubscriberQueueLimit)
@@ -109,20 +142,59 @@ func NewServer(cfg Config) *Server {
 }
 
 // Listen recupera o estado persistido em Config.DataDir e abre o socket. O
-// estado é carregado antes de aceitar conexões (RF-50).
+// estado é carregado antes de aceitar conexões (RF-50). Na reserva, também
+// abre o endereço de replicação.
 func (s *Server) Listen() error {
-	if s.cfg.SubscriberQueueLimit < 2 {
-		return errQueueLimit
+	if err := s.validate(); err != nil {
+		return err
 	}
 	if err := s.openStore(); err != nil {
 		return err
 	}
+	if s.cfg.Role == RoleBackup {
+		replica, err := replication.Listen(s.cfg.ReplicationAddr, replicaTarget{s.store}, s.log)
+		if err != nil {
+			_ = s.store.close()
+			return err
+		}
+		s.replica = replica
+	}
 	ln, err := net.Listen("tcp", s.cfg.Addr)
 	if err != nil {
+		if s.replica != nil {
+			_ = s.replica.Close()
+		}
 		_ = s.store.close()
 		return err
 	}
 	s.listener = ln
+	if s.cfg.Role == RolePrimary && s.cfg.ReplicaAddr != "" {
+		s.primary = replication.NewPrimary(replication.PrimaryConfig{
+			Addr:    s.cfg.ReplicaAddr,
+			Timeout: s.cfg.ReplicaTimeout,
+			Logger:  s.log,
+		})
+		s.store.replicator = s.primary
+	}
+	return nil
+}
+
+func (s *Server) validate() error {
+	if s.cfg.SubscriberQueueLimit < 2 {
+		return errQueueLimit
+	}
+	switch s.cfg.Role {
+	case RolePrimary:
+		if s.cfg.ReplicaAddr != "" && s.cfg.DataDir == "" {
+			return fmt.Errorf("%w: o primario com reserva exige DataDir", errReplication)
+		}
+	case RoleBackup:
+		if s.cfg.DataDir == "" || s.cfg.ReplicationAddr == "" {
+			return fmt.Errorf("%w: a reserva exige DataDir e ReplicationAddr", errReplication)
+		}
+	default:
+		return fmt.Errorf("%w: %q", errInvalidRole, s.cfg.Role)
+	}
 	return nil
 }
 
@@ -134,6 +206,13 @@ func (s *Server) openStore() error {
 	s.store = st
 	s.deliveries.store = st
 	s.publisher.store = st
+
+	if s.cfg.Role == RoleBackup {
+		// A reserva não atende clientes: o estado fica só no store e é
+		// montado em memória quando ela for promovida (task 012).
+		s.log.Info("reserva com estado em disco", "data_dir", s.cfg.DataDir, "sensors", len(state.sensors))
+		return nil
+	}
 
 	for clientID, filters := range state.subs {
 		for filter := range filters {
@@ -187,6 +266,12 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	s.scheduler.start()
 	s.monitor.start()
+	if s.primary != nil {
+		s.primary.Start(replicaSource{s.store})
+	}
+	if s.replica != nil {
+		s.replica.Start()
+	}
 	s.log.Info("broker escutando", "addr", s.listener.Addr().String())
 
 	for {
@@ -222,7 +307,41 @@ func (s *Server) shutdown() error {
 	s.scheduler.close()
 	s.monitor.close()
 	s.deliveries.wait()
+	if s.primary != nil {
+		_ = s.primary.Close()
+	}
+	if s.replica != nil {
+		_ = s.replica.Close()
+	}
 	return s.store.close()
+}
+
+// Role devolve o papel configurado do broker.
+func (s *Server) Role() Role {
+	return s.cfg.Role
+}
+
+// ReplicaSynced informa se a reserva está sincronizada com este primário.
+// Falso sem reserva configurada ou fora do papel de primário.
+func (s *Server) ReplicaSynced() bool {
+	return s.primary != nil && s.primary.Synced()
+}
+
+// ReplicaDesyncs conta quantas vezes a reserva deixou de estar sincronizada.
+func (s *Server) ReplicaDesyncs() uint64 {
+	if s.primary == nil {
+		return 0
+	}
+	return s.primary.Desyncs()
+}
+
+// ReplicationAddr devolve o endereço de replicação da reserva; nil fora do
+// papel de reserva ou antes de Listen.
+func (s *Server) ReplicationAddr() net.Addr {
+	if s.replica == nil {
+		return nil
+	}
+	return s.replica.Addr()
 }
 
 // QueueStats devolve uma fotografia das filas: PUBLISH sem PUBACK por sensor,

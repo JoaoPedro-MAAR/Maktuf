@@ -180,7 +180,7 @@ A prioridade segue a escala:
 | ID | Prioridade | Requisito | Critério de aceitação |
 |---|---|---|---|
 | RF-40 | Essencial | Deve existir um broker primário e um broker reserva sincronizado. | A reserva possui as leituras e inscrições necessárias para assumir. |
-| RF-41 | Essencial | Leituras e inscrições devem ser replicadas antes do ACK ao sensor. | O sensor só recebe ACK após a confirmação da réplica. |
+| RF-41 | Essencial | Leituras e inscrições devem ser replicadas antes do ACK ao sensor enquanto a reserva estiver sincronizada. Com a reserva fora do ar ou sem responder no prazo, o primário segue sozinho, marca a reserva como dessincronizada e a ressincroniza por completo ao reconectar (ver [ressalvas](../ressalvas.md)). | Com a reserva sincronizada, o sensor só recebe ACK após a confirmação da réplica; uma reserva dessincronizada não é promovida. |
 | RF-42 | Essencial | O Juiz deve monitorar os brokers por heartbeat. | A ausência de heartbeat dentro do prazo dispara avaliação de failover. |
 | RF-43 | Essencial | Em caso de falha do primário, o Juiz deve promover a reserva. | A reserva assume o IP virtual e passa a aceitar conexões. |
 | RF-44 | Essencial | O failover deve ser transparente para as aplicações. | A biblioteca reconecta sozinha; a aplicação não precisa reiniciar nem refazer `SUBSCRIBE`. |
@@ -431,7 +431,7 @@ As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
 | DP-01 | Criação de tópico | O tópico é criado na primeira inscrição e removido quando o último inscrito cancela. | Alinha o ciclo de vida dinâmico com a regra de descarte quando não há inscritos. |
 | DP-02 | Publicação sem inscritos | A mensagem é descartada e o publicador recebe `NO_SUBSCRIBERS`. | Atende ao requisito mínimo e evita retenção indefinida. |
 | DP-03 | Sem replay histórico | Novos inscritos recebem apenas mensagens futuras. | Simplifica o modelo e evita armazenamento de histórico não previsto no cenário. |
-| DP-04 | ACK de leitura | O ACK significa persistência no primário e replicação na reserva. | Garante RPO zero para leituras confirmadas. |
+| DP-04 | ACK de leitura | O ACK significa persistência no primário e, enquanto a reserva estiver sincronizada, replicação na reserva. Com a reserva indisponível, o primário confirma só com o próprio disco (modo degradado). | Garante RPO zero para leituras confirmadas com a reserva sincronizada, sem tornar a reserva um segundo ponto de falha. |
 | DP-05 | Exclusão após entrega | A cópia original é removida após o enfileiramento para todos os inscritos; cada fila mantém sua própria retenção. | Permite apagar a mensagem sem perder entregas pendentes de consumidores lentos. |
 | DP-06 | Backpressure | Ao encher a fila de um sensor, o broker para de confirmar aquele sensor; os demais não são afetados. | Preserva confiabilidade e justiça. |
 | DP-07 | Consumidor lento | Cada assinante tem fila limitada; ao exceder a retenção, a lacuna é explicitada. | Evita perda silenciosa e bloqueio global. |
