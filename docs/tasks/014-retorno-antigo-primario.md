@@ -56,6 +56,20 @@ Bloqueia: validação completa de alta disponibilidade (RF-40 a RF-50).
 2. **Estado local do antigo primário:** descartar e copiar tudo do atual
    (mais simples e seguro) ou reconciliar.
 
+### Decisões tomadas
+
+1. **Resolvido:** reaproveitar o fluxo de `REPLICA`. A nova primária replica
+   para o endereço do par e a ressincronização completa usa `SYNC_START →
+   RECORD… → SYNC_END`, sem mensagens novas.
+2. **Resolvido:** descartar e copiar. O antigo primário descarta o estado em
+   memória e o `Reset` da reserva substitui o store pelo do primário atual.
+3. **Topologia em par (DP-12):** flags de replicação simétricas (próprio
+   endereço e o do par). Generalizar para N reservas está descrito em
+   `docs/ressalvas.md`.
+4. **Com Juiz, o broker não vira primário sozinho ao subir:** espera
+   `PROMOTE(próprio id)` ou a reserva sincronizar nele. `PROMOTE(outro)`
+   rebaixa o primário a reserva.
+
 ## Critérios de aceitação
 
 - [ ] O antigo primário volta como reserva e não aceita clientes.

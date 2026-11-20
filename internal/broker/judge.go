@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/replication"
 )
 
 // errFenced impede a confirmação de uma escrita feita sem reserva e sem o
@@ -242,8 +243,8 @@ func (s *Server) heartbeatState() (protocol.BrokerState, uint64) {
 		return protocol.BrokerStateBackupSyncing, applied
 	}
 	var index uint64
-	if s.primary != nil {
-		index = s.primary.Index()
+	if p := s.currentPrimary(); p != nil {
+		index = p.Index()
 	}
 	if s.fenced.Load() {
 		return protocol.BrokerStateFenced, index
@@ -270,10 +271,10 @@ func (s *Server) fence(reason string) {
 	}
 }
 
-// unfence volta a atender clientes. Um primário deposto pelo Juiz só volta
-// com PROMOTE(próprio id).
+// unfence volta a atender clientes. Só vale para o primário: um broker que
+// o Juiz depôs já virou reserva (demote).
 func (s *Server) unfence(reason string) {
-	if s.deposed.Load() || !s.fenced.Swap(false) {
+	if s.Role() != RolePrimary || !s.fenced.Swap(false) {
 		return
 	}
 	s.log.Info("broker volta a atender clientes", "reason", reason)
@@ -283,13 +284,13 @@ func (s *Server) unfence(reason string) {
 }
 
 // replicaChanged é chamado pela replicação quando a reserva sincroniza ou
-// dessincroniza. Reserva sincronizada prova que ela não foi promovida, então
-// o primário isolado pode voltar.
+// dessincroniza. Reserva sincronizada prova que o par não é primário, então o
+// primário isolado ou aguardando o Juiz pode atender.
 func (s *Server) replicaChanged() {
 	if s.judge != nil {
 		s.judge.notify()
 	}
-	if s.primary.Synced() {
+	if p := s.currentPrimary(); p != nil && p.Synced() {
 		s.unfence("reserva sincronizada")
 	}
 }
@@ -301,11 +302,9 @@ func (s *Server) handlePromote(id string) {
 	case id == s.cfg.BrokerID && s.Role() == RoleBackup:
 		s.promote()
 	case id == s.cfg.BrokerID:
-		s.deposed.Store(false)
 		s.unfence("juiz confirmou este primario")
 	case s.Role() == RolePrimary:
-		s.deposed.Store(true)
-		s.fence("juiz indicou outro primario: " + id)
+		s.demote(id)
 	default:
 		s.log.Debug("PROMOTE para outro broker ignorado pela reserva", "promoted", id)
 	}
@@ -340,14 +339,82 @@ func (s *Server) promote() {
 	s.store.state.prune()
 	state := s.store.recovered()
 	s.store.mu.Unlock()
+	// O broker pode já ter sido primário antes: o estado em memória daquela
+	// época não vale mais.
+	s.resetMemory()
 	s.loadState(state)
 
+	// Replica para o par assim que ele voltar como reserva (task 014). Até
+	// lá, cada escrita depende do aval do Juiz, como no primário original.
+	if s.cfg.ReplicaAddr != "" {
+		p := s.newPrimaryLink()
+		s.store.mu.Lock()
+		s.store.replicator = p
+		s.store.mu.Unlock()
+		s.primary.Store(p)
+		p.Start(replicaSource{s.store})
+	}
+
+	s.fenced.Store(false)
 	s.role.Store(RolePrimary)
 	s.log.Info("reserva promovida a primario",
-		"index", index, "subscribers", len(state.subs), "sensors", len(state.sensors))
+		"index", index, "subscribers", len(state.subs), "sensors", len(state.sensors),
+		"replica_addr", s.cfg.ReplicaAddr)
 	if s.judge != nil {
 		s.judge.notify()
 	}
+}
+
+// demote transforma o primário em reserva quando o Juiz indica outro
+// primário (task 014): para de atender, para de replicar, descarta o estado
+// em memória e abre o endereço de replicação. O primário atual conecta e
+// envia o estado completo, que substitui o store local (Reset).
+func (s *Server) demote(primaryID string) {
+	s.haMu.Lock()
+	defer s.haMu.Unlock()
+	if s.Role() != RolePrimary {
+		return
+	}
+	s.fence("juiz indicou outro primario: " + primaryID)
+	if s.cfg.ReplicationAddr == "" || !s.store.persistent() {
+		s.log.Error("sem -replication-addr e -data-dir nao da para voltar como reserva; broker segue isolado",
+			"primary", primaryID)
+		return
+	}
+
+	// A escrita em andamento termina antes da troca; as seguintes não são
+	// mais replicadas por este broker.
+	s.store.mu.Lock()
+	s.store.replicator = nil
+	s.store.mu.Unlock()
+	if p := s.primary.Swap(nil); p != nil {
+		_ = p.Close()
+	}
+	s.resetMemory()
+
+	r, err := replication.Listen(s.cfg.ReplicationAddr, replicaTarget{s.store}, s.log)
+	if err != nil {
+		// Segue isolado; o próximo PROMOTE do Juiz tenta de novo.
+		s.log.Error("falha ao abrir o endereco de replicacao", "addr", s.cfg.ReplicationAddr, "error", err)
+		return
+	}
+	r.Start()
+	s.replica = r
+	s.role.Store(RoleBackup)
+	s.fenced.Store(false)
+	s.log.Info("antigo primario volta como reserva", "primary", primaryID, "replication_addr", s.cfg.ReplicationAddr)
+	if s.judge != nil {
+		s.judge.notify()
+	}
+}
+
+// resetMemory descarta tópicos, filas, cursores, último seq e estados de
+// sensor em memória. O que vale está no store.
+func (s *Server) resetMemory() {
+	s.topics.reset()
+	s.deliveries.reset()
+	s.publisher.reset()
+	s.status.reset()
 }
 
 // closeSessions encerra as sessões abertas sem fechar o listener.

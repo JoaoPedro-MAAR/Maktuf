@@ -79,6 +79,13 @@ func (p *publisher) sensor(id string) *sensorState {
 	return st
 }
 
+// reset esquece o último seq de cada sensor (task 014).
+func (p *publisher) reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sensors = make(map[string]*sensorState)
+}
+
 func (p *publisher) restore(sensors map[string]uint64) {
 	for sensorID, seq := range sensors {
 		st := p.sensor(sensorID)
