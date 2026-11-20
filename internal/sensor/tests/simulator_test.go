@@ -1,11 +1,14 @@
 package sensor_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/broker"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/client"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/consumer"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/metrics"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/sensor"
 )
 
@@ -321,5 +325,56 @@ func TestBufferOverflowIsReported(t *testing.T) {
 	st := sim.Stats()
 	if st.Pending != 5 || st.Dropped != st.Measured-5 {
 		t.Fatalf("overflow (RF-26) = %+v", st)
+	}
+}
+
+func metricValue(t *testing.T, reg *metrics.Registry, series string) float64 {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := metrics.WriteText(&buf, reg.Gather()); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if rest, ok := strings.CutPrefix(line, series+" "); ok {
+			v, err := strconv.ParseFloat(rest, 64)
+			if err != nil {
+				t.Fatalf("%s: %v", line, err)
+			}
+			return v
+		}
+	}
+	t.Fatalf("serie %s ausente:\n%s", series, buf.String())
+	return 0
+}
+
+// Task 015: simulador e consumidor expõem as métricas do lado do cliente
+// (overflow do buffer do sensor e deduplicação no consumidor).
+func TestSimulatorAndConsumerExposeMetrics(t *testing.T) {
+	addr := freeAddr(t)
+	startBroker(t, addr, broker.Config{})
+	cons := startConsumer(t, addr)
+
+	sim := runSimulator(t, baseConfig(t, addr), func(s sensor.Stats) bool { return s.Measured >= 15 })
+	st := sim.Stats()
+	reg := sim.Metrics()
+
+	if got := metricValue(t, reg, "sensor_readings_total"); got != float64(st.Measured) {
+		t.Fatalf("sensor_readings_total = %v, esperado %d", got, st.Measured)
+	}
+	if got := metricValue(t, reg, "sensor_readings_confirmed_total"); got != float64(st.Confirmed) {
+		t.Fatalf("sensor_readings_confirmed_total = %v, esperado %d", got, st.Confirmed)
+	}
+	for _, spec := range sim.Specs() {
+		if got := metricValue(t, reg, `sensor_buffer_overflow_total{sensor_id="`+spec.ID+`"}`); got != 0 {
+			t.Fatalf("overflow de %s = %v", spec.ID, got)
+		}
+	}
+
+	waitFor(t, "consumidor receber tudo", func() bool { return cons.Stats().Received == st.Measured })
+	if got := metricValue(t, cons.Metrics(), "messages_received_total"); got != float64(st.Measured) {
+		t.Fatalf("messages_received_total = %v, esperado %d", got, st.Measured)
+	}
+	if got := metricValue(t, cons.Metrics(), "end_to_end_latency_seconds_count"); got != float64(st.Measured) {
+		t.Fatalf("end_to_end_latency_seconds_count = %v, esperado %d", got, st.Measured)
 	}
 }

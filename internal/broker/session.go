@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
 )
@@ -192,6 +193,7 @@ func (s *session) close() error {
 // quando a própria fila enche: nesse caso para de ler o socket até o ackLoop
 // liberar um slot com o PUBACK, aplicando backpressure apenas a este sensor.
 func (s *session) handlePublish(_ *slog.Logger, m *protocol.Publish) error {
+	received := time.Now()
 	if err := validatePublish(m); err != nil {
 		return err
 	}
@@ -213,7 +215,7 @@ func (s *session) handlePublish(_ *slog.Logger, m *protocol.Publish) error {
 		}
 	}
 
-	job := &publishJob{msg: m, done: make(chan publishOutcome, 1)}
+	job := &publishJob{msg: m, done: make(chan publishOutcome, 1), received: received}
 	select {
 	case s.acks <- job:
 	case <-s.closed:
@@ -256,6 +258,7 @@ func (s *session) ackLoop() {
 			return
 		}
 		<-s.queue.slots
+		s.server.metrics.publishDone(job.msg, outcome.res, job.received)
 
 		s.log.Debug("leitura recebida",
 			"topic", job.msg.Topic, "sensor_id", job.msg.SensorID, "seq", job.msg.Seq,
