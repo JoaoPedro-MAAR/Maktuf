@@ -59,8 +59,16 @@ Se faltar operação na biblioteca (por exemplo, enviar `SLEEP`), adicioná-la e
 1. **Formato do arquivo de configuração:** flags apenas ou arquivo (JSON ou
    outro). A restrição de "não usar JSON" vale para o transporte, não para a
    configuração.
+   **Resolvido:** apenas flags, como no `cmd/broker`.
 2. **Política para lacunas (RF-22):** apenas registrar ou também solicitar
    recuperação.
+   **Implementado como "apenas registrar"; aguarda confirmação:** o protocolo
+   não tem mensagem para pedir recuperação. O consumidor separa lacuna com
+   `GAP_BEFORE` (retenção do assinante) de lacuna sem marca (overflow do
+   buffer do sensor ou perda).
+3. **Tamanho do buffer do sensor** (ponto em aberto 5 de `requisitos.md`):
+   flag `-buffer-size` com default provisório de 10000 leituras. O ponto
+   continua em aberto.
 
 ## Critérios de aceitação
 
