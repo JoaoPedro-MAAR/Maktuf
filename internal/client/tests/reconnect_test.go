@@ -25,6 +25,20 @@ func waitConnected(t *testing.T, c *client.Client) {
 	}
 }
 
+// waitDisconnected espera o cliente perceber a queda. Sem isso, logo depois
+// de derrubar o broker, Connected() ainda pode refletir a conexão antiga e o
+// teste usaria um socket já fechado.
+func waitDisconnected(t *testing.T, c *client.Client) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for c.Connected() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout aguardando o cliente perceber a queda")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func waitPending(t *testing.T, b storage.Buffer, want int) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -54,6 +68,8 @@ func TestReconnectRestoresSubscriptions(t *testing.T) {
 	}
 
 	b.stop(t)
+	waitDisconnected(t, consumer)
+	waitDisconnected(t, sensor)
 	startBrokerAt(t, addr, broker.Config{})
 
 	waitConnected(t, consumer)
