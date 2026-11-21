@@ -24,6 +24,7 @@ func registerMetrics(reg *metrics.Registry, s *Simulator) {
 	counter("sensor_simulated_failures_total", "Desconexoes simuladas.", &s.stats.failures)
 	counter("sensor_sleeps_total", "Ciclos de sono (SLEEP).", &s.stats.sleeps)
 	counter("sensor_late_wakes_total", "Sonos que passaram do prazo anunciado.", &s.stats.lateWakes)
+	counter("sensor_burst_readings_total", "Leituras geradas pela rajada (RF-35, RNF-04).", &s.stats.burstReadings)
 
 	reg.NewCounterFunc("sensor_readings_confirmed_total",
 		"Leituras removidas do buffer por resposta definitiva do broker (inclui execucoes anteriores).",

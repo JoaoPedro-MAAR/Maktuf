@@ -55,6 +55,7 @@ import (
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/protocol"
 )
 
+// Role é o papel declarado no CONNECT: RoleSensor ou RoleConsumer.
 type Role = protocol.Role
 
 const (
@@ -62,6 +63,9 @@ const (
 	RoleConsumer = protocol.RoleConsumer
 )
 
+// Status é a resposta do broker: StatusPersisted ou StatusNoSubscribers no
+// PUBACK (RF-52), StatusOK no SUBACK/UNSUBACK e StatusTemporaryFailure quando
+// o cliente deve tentar de novo mantendo a leitura no buffer.
 type Status = protocol.Status
 
 const (
@@ -71,6 +75,8 @@ const (
 	StatusTemporaryFailure = protocol.StatusTemporaryFailure
 )
 
+// SensorState é o estado publicado em sensores/{id}/status (RF-21) e exposto
+// em Message.Status. SensorStateUnknown marca uma leitura comum.
 type SensorState = protocol.SensorState
 
 const (
@@ -253,6 +259,8 @@ func ctxErr(ctx context.Context, err error) error {
 	return err
 }
 
+// ClientID devolve o identificador usado no CONNECT. Para um consumidor, é
+// ele que mantém o cursor de entrega no broker entre reconexões.
 func (c *Client) ClientID() string { return c.clientID }
 
 // Messages devolve o canal de leituras entregues pelo broker. O DELIVER_ACK é

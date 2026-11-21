@@ -1,0 +1,17 @@
+{
+  "name": "rajada_ci",
+  "description": "Versão reduzida da rajada (RF-35, RNF-04): 300 leituras de uma vez, absorvidas pelo buffer dos sensores, sem recusa de conexão e sem perda.",
+  "seed": 2,
+  "duration": "15s",
+  "scrape_interval": "500ms",
+  "drain": "30s",
+  "cluster": { "replicated": true, "judge": true },
+  "sensors": [
+    { "group": "sensor", "count": 5, "continuous_ratio": 1, "continuous_interval": "1s", "burst_at": "3s", "burst_size": 300 }
+  ],
+  "goals": [
+    { "name": "Rajada gerada por inteiro", "type": "metric", "process": "sensores:sensor", "metric": "sensor_burst_readings_total", "min": 300 },
+    { "name": "RNF-04 nenhuma conexao recusada", "type": "metric", "process": "vip", "metric": "vip_rejected_total", "max": 0 },
+    { "name": "RNF-04 sem perda", "type": "no_loss" }
+  ]
+}

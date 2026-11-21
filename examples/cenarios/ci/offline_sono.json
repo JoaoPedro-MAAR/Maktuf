@@ -1,0 +1,19 @@
+{
+  "name": "offline_sono_ci",
+  "description": "Versão reduzida de sensores offline e sono (RF-25, RF-27 a RF-29, CT-05, CT-06): desconexões e sonos com atraso; o broker publica offline e nada se perde.",
+  "seed": 6,
+  "duration": "15s",
+  "scrape_interval": "500ms",
+  "drain": "10s",
+  "cluster": { "replicated": true, "judge": true, "status_tolerance": "300ms" },
+  "sensors": [
+    { "group": "sensor", "count": 5, "continuous_ratio": 1, "continuous_interval": "200ms", "stagger": false,
+      "failure_prob": 0.05, "failure_downtime": "500ms",
+      "sleep_prob": 0.05, "sleep_duration": "300ms", "late_wake_prob": 0.5, "late_wake_extra": "2s" }
+  ],
+  "goals": [
+    { "name": "RF-28 sensor marcado offline", "type": "metric", "process": "consumidor:consumidor-1", "metric": "sensor_status_transitions_total", "labels": { "state": "offline" }, "min": 1 },
+    { "name": "RF-27 sensor marcado dormindo", "type": "metric", "process": "consumidor:consumidor-1", "metric": "sensor_status_transitions_total", "labels": { "state": "dormindo" }, "min": 1 },
+    { "name": "RF-25 sem perda com desconexoes", "type": "no_loss" }
+  ]
+}

@@ -48,6 +48,8 @@ func run() error {
 	flag.Float64Var(&cfg.LateWakeProb, "late-wake-prob", 0, "chance de acordar depois do prazo do SLEEP")
 	flag.DurationVar(&cfg.LateWakeExtra, "late-wake-extra", sensor.DefaultLateWakeExtra, "atraso alem do prazo ao acordar tarde")
 	flag.DurationVar(&cfg.PublishTimeout, "publish-timeout", sensor.DefaultPublishTimeout, "espera maxima pelo PUBACK de cada medicao")
+	flag.DurationVar(&cfg.BurstAt, "burst-at", 0, "instante da rajada, contado do inicio")
+	flag.IntVar(&cfg.BurstSize, "burst-size", 0, "leituras da rajada no total, divididas entre os sensores (0 = sem rajada)")
 	flag.DurationVar(&cfg.DrainTimeout, "drain-timeout", sensor.DefaultDrainTimeout, "espera para enviar as pendencias ao encerrar (0 = nao drena)")
 	flag.DurationVar(&cfg.Reconnect.BaseDelay, "reconnect-base", client.DefaultReconnectBaseDelay, "intervalo inicial de reconexao")
 	flag.DurationVar(&cfg.Reconnect.MaxDelay, "reconnect-max", client.DefaultReconnectMaxDelay, "intervalo maximo de reconexao")

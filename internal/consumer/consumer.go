@@ -37,7 +37,10 @@ type Config struct {
 	// RetryInterval é a espera entre tentativas da conexão inicial. Depois
 	// de conectado, a reconexão é da biblioteca (Reconnect).
 	RetryInterval time.Duration
-	Reconnect     client.ReconnectOptions
+	// ProcessDelay simula um consumidor lento: espera por mensagem antes de
+	// confirmar a próxima (RF-36, CT-10). Zero não espera.
+	ProcessDelay time.Duration
+	Reconnect    client.ReconnectOptions
 	// Metrics recebe as métricas do consumidor. Nil cria um registro
 	// próprio, acessível por Consumer.Metrics.
 	Metrics *metrics.Registry
@@ -149,7 +152,10 @@ func (c *Consumer) connect(ctx context.Context) (*client.Client, bool) {
 
 func (c *Consumer) handle(m client.Message) {
 	obs := c.tracker.Observe(m, time.Now())
-	c.metrics.observe(obs, m.Status)
+	c.metrics.observe(obs, m)
+	if c.cfg.ProcessDelay > 0 {
+		time.Sleep(c.cfg.ProcessDelay)
+	}
 	log := c.log.With("sensor_id", m.SensorID, "topic", m.Topic, "seq", m.Seq)
 
 	switch obs.Outcome {

@@ -399,14 +399,16 @@ func (h *Histogram) Count(labelValues ...string) uint64 {
 // Quantile estima o percentil q (entre 0 e 1) da série.
 func (h *Histogram) Quantile(q float64, labelValues ...string) float64 {
 	cumulative, _ := h.vec.get(labelValues).snapshot()
-	return estimateQuantile(q, h.bounds, cumulative)
+	return EstimateQuantile(q, h.bounds, cumulative)
 }
 
-// estimateQuantile segue a regra do histogram_quantile do Prometheus: acha o
+// EstimateQuantile segue a regra do histogram_quantile do Prometheus: acha o
 // bucket onde cai a posição q·total e interpola linearmente dentro dele,
-// supondo observações espalhadas por igual no intervalo. Sem observações devolve NaN; no
-// bucket +Inf devolve o maior limite finito.
-func estimateQuantile(q float64, bounds []float64, cumulative []uint64) float64 {
+// supondo observações espalhadas por igual no intervalo. bounds são os
+// limites finitos e cumulative as contagens acumuladas, com o +Inf no fim
+// (len(bounds)+1). Sem observações devolve NaN; no bucket +Inf devolve o
+// maior limite finito.
+func EstimateQuantile(q float64, bounds []float64, cumulative []uint64) float64 {
 	total := cumulative[len(cumulative)-1]
 	if total == 0 || math.IsNaN(q) {
 		return math.NaN()
@@ -458,7 +460,7 @@ func (h *Histogram) quantileSamples() []Sample {
 		for _, q := range Quantiles {
 			out = append(out, Sample{
 				Labels: withLabel(labels, "quantile", formatFloat(q)),
-				Value:  estimateQuantile(q, h.bounds, cumulative),
+				Value:  EstimateQuantile(q, h.bounds, cumulative),
 			})
 		}
 	})

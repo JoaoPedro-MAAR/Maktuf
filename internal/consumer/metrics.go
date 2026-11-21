@@ -1,6 +1,8 @@
 package consumer
 
 import (
+	"strings"
+
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/client"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/metrics"
 )
@@ -26,7 +28,7 @@ type consumerMetrics struct {
 func newConsumerMetrics(reg *metrics.Registry) *consumerMetrics {
 	return &consumerMetrics{
 		received: reg.NewCounter("messages_received_total",
-			"Leituras novas aceitas pelo consumidor."),
+			"Leituras novas aceitas pelo consumidor, por grupo de sensores.", "group"),
 		duplicated: reg.NewCounter("messages_duplicated_total",
 			"Leituras repetidas descartadas pela deduplicacao sensor_id + seq (RF-14, CE-15)."),
 		old: reg.NewCounter("messages_old_total",
@@ -38,21 +40,33 @@ func newConsumerMetrics(reg *metrics.Registry) *consumerMetrics {
 		transitions: reg.NewCounter("sensor_status_transitions_total",
 			"Transicoes recebidas do topico sensores/{id}/status (RF-21).", "state"),
 		endToEnd: reg.NewHistogram("end_to_end_latency_seconds",
-			"Tempo entre a medicao no sensor e o recebimento (inclui o tempo no buffer do sensor).", nil),
+			"Tempo entre a medicao no sensor e o recebimento (inclui o tempo no buffer do sensor), por grupo de sensores.", nil, "group"),
 	}
 }
 
-func (m *consumerMetrics) observe(obs Observation, status client.SensorState) {
+// sensorGroup é o grupo do sensor nas métricas: o sensor_id sem o último
+// trecho depois de "-" (sensor-007 → sensor, agressivo-001 → agressivo). Com
+// isso o p95 de cada grupo do simulador pode ser comparado (RNF-05) sem um
+// rótulo por sensor.
+func sensorGroup(id string) string {
+	if i := strings.LastIndexByte(id, '-'); i > 0 {
+		return id[:i]
+	}
+	return id
+}
+
+func (m *consumerMetrics) observe(obs Observation, msg client.Message) {
 	switch obs.Outcome {
 	case OutcomeStatus:
-		m.transitions.Inc(status.String())
+		m.transitions.Inc(msg.Status.String())
 	case OutcomeDuplicate:
 		m.duplicated.Inc()
 	case OutcomeOld:
 		m.old.Inc()
 	case OutcomeAccepted:
-		m.received.Inc()
-		m.endToEnd.ObserveDuration(obs.Latency)
+		group := sensorGroup(msg.SensorID)
+		m.received.Inc(group)
+		m.endToEnd.ObserveDuration(obs.Latency, group)
 		cause := causeUnmarked
 		if obs.Marked {
 			cause = causeRetention

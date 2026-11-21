@@ -1,0 +1,27 @@
+{
+  "name": "queda_primario_ci",
+  "description": "Versão reduzida: kill -9 no primário no meio do fluxo; o Juiz promove a reserva e os clientes seguem pelo vip.",
+  "seed": 7,
+  "duration": "12s",
+  "scrape_interval": "250ms",
+  "drain": "10s",
+  "cluster": {
+    "replicated": true,
+    "judge": true,
+    "failure_timeout": "1s",
+    "check_interval": "100ms",
+    "heartbeat_interval": "100ms",
+    "fence_timeout": "500ms"
+  },
+  "sensors": [
+    { "group": "sensor", "count": 3, "continuous_ratio": 1, "continuous_interval": "100ms", "stagger": false }
+  ],
+  "faults": [
+    { "at": "4s", "action": "kill", "target": "primario" }
+  ],
+  "goals": [
+    { "name": "RNF-06 RTO <= 30 s", "type": "rto", "fault": 0, "max": 30 },
+    { "name": "RNF-07 sem perda (RPO = 0)", "type": "no_loss" },
+    { "name": "Failover concluido pelo Juiz", "type": "metric", "process": "juiz", "metric": "failover_duration_seconds_count", "min": 1 }
+  ]
+}

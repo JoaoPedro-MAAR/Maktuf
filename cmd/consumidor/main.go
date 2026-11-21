@@ -35,6 +35,7 @@ func run() error {
 	filters := flag.String("filters", strings.Join(consumer.DefaultFilters, ","), "filtros de topico separados por virgula")
 	flag.IntVar(&cfg.DedupWindow, "dedup-window", client.DefaultDedupLimit, "chaves sensor_id+seq lembradas pela deduplicacao")
 	flag.IntVar(&cfg.LatencySamples, "latency-samples", consumer.DefaultLatencySamples, "tamanho da amostra de latencias")
+	flag.DurationVar(&cfg.ProcessDelay, "process-delay", 0, "espera por mensagem, simulando consumidor lento (0 = sem espera)")
 	flag.DurationVar(&cfg.RetryInterval, "retry", consumer.DefaultRetryInterval, "espera entre tentativas da conexao inicial")
 	flag.DurationVar(&cfg.Reconnect.BaseDelay, "reconnect-base", client.DefaultReconnectBaseDelay, "intervalo inicial de reconexao")
 	flag.DurationVar(&cfg.Reconnect.MaxDelay, "reconnect-max", client.DefaultReconnectMaxDelay, "intervalo maximo de reconexao")

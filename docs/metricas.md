@@ -56,23 +56,28 @@ reinicia.
 | `sensor_buffer_pending` | gauge | `sensor_id` | Leituras aguardando resposta no buffer |
 | `sensor_connects_total`, `sensor_connect_failures_total` | counter | — | Conexões com o broker e falhas |
 | `sensor_simulated_failures_total`, `sensor_sleeps_total`, `sensor_late_wakes_total` | counter | — | Eventos simulados |
+| `sensor_burst_readings_total` | counter | — | Leituras geradas pela rajada (`-burst-at`, `-burst-size`) |
 
 ## Consumidor de exemplo
 
 | Métrica | Tipo | Rótulos | Quando muda |
 |---|---|---|---|
-| `messages_received_total` | counter | — | Leitura nova aceita |
+| `messages_received_total` | counter | `group` | Leitura nova aceita |
 | `messages_duplicated_total` | counter | — | Leitura repetida descartada por `sensor_id + seq` (RF-14) |
 | `messages_old_total` | counter | — | seq já processado, fora da janela de deduplicação (CE-16) |
 | `sequence_gaps_total` | counter | `cause` (`retention`/`unmarked`) | Salto de seq (RF-22) |
 | `missing_readings_total` | counter | `cause` | seq faltantes nas lacunas |
 | `sensor_status_transitions_total` | counter | `state` | Transição recebida em `sensores/{id}/status` |
-| `end_to_end_latency_seconds` | histogram | — | Da medição no sensor até o recebimento |
+| `end_to_end_latency_seconds` | histogram | `group` | Da medição no sensor até o recebimento |
 
 `cause="retention"` é a lacuna sinalizada pelo broker com `GAP_BEFORE`.
 `cause="unmarked"` é a lacuna sem marca, vinda de antes do broker,
 tipicamente overflow do buffer do sensor. Com isso dá para distinguir perda
 por overflow de perda por retenção (RF-31, RNF-13).
+
+`group` é o `sensor_id` sem o último trecho depois de `-` (`sensor-007` vira
+`sensor`, `agressivo-001` vira `agressivo`). Com isso, a latência de cada grupo
+do simulador pode ser comparada (RNF-05) sem um rótulo por sensor.
 
 A `end_to_end_latency_seconds` inclui o tempo que a leitura ficou no buffer do
 sensor. Por isso tem nome diferente da `delivery_latency_seconds` do broker.
