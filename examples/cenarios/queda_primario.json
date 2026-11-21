@@ -1,0 +1,18 @@
+{
+  "name": "queda_primario",
+  "description": "Queda do broker primário (RNF-06, RNF-07, CT-11): kill -9 no primário com os prazos padrão (Juiz 5 s); clientes só pelo vip.",
+  "seed": 46,
+  "duration": "90s",
+  "scrape_interval": "250ms",
+  "drain": "30s",
+  "cluster": { "replicated": true, "judge": true },
+  "sensors": [
+    { "group": "sensor", "count": 20, "continuous_ratio": 1, "continuous_interval": "1s" }
+  ],
+  "faults": [ { "at": "30s", "action": "kill", "target": "primario" } ],
+  "goals": [
+    { "name": "RNF-06 RTO <= 30 s", "type": "rto", "fault": 0, "max": 30 },
+    { "name": "RNF-07 sem perda (RPO = 0)", "type": "no_loss" },
+    { "name": "Failover concluido pelo Juiz", "type": "metric", "process": "juiz", "metric": "failover_duration_seconds_count", "min": 1 }
+  ]
+}

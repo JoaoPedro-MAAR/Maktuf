@@ -1,0 +1,17 @@
+{
+  "name": "rajada",
+  "description": "Rajada de 2.000 mensagens (RF-35, RNF-04, CT-08): as leituras vão para o buffer dos sensores e são enviadas sem recusa de conexão e sem perda.",
+  "seed": 43,
+  "duration": "90s",
+  "scrape_interval": "1s",
+  "drain": "3m",
+  "cluster": { "replicated": true, "judge": true },
+  "sensors": [
+    { "group": "sensor", "count": 20, "continuous_ratio": 1, "continuous_interval": "1s", "burst_at": "20s", "burst_size": 2000, "buffer_size": 10000 }
+  ],
+  "goals": [
+    { "name": "Rajada gerada por inteiro", "type": "metric", "process": "sensores:sensor", "metric": "sensor_burst_readings_total", "min": 2000 },
+    { "name": "RNF-04 nenhuma conexao recusada", "type": "metric", "process": "vip", "metric": "vip_rejected_total", "max": 0 },
+    { "name": "RNF-04 sem perda", "type": "no_loss" }
+  ]
+}

@@ -242,3 +242,37 @@ Com Juiz configurado, um broker que sobe como primário só atende depois do
 `PROMOTE` (ou da reserva sincronizar nele). Com o Juiz fora e sem reserva
 disponível, ele fica sem atender até o Juiz voltar: é o preço de nunca haver
 dois primários. Um broker que já estava atendendo continua atendendo.
+
+## Vazão limitada pela gravação síncrona replicada (task 017)
+
+Cada leitura custa, em sequência:
+1. fsync no buffer do sensor;
+2. fsync no store do primário;
+3. ida e volta e fsync na reserva (`REPLICA_ACK`);
+4. depois da entrega, um registro de `DELIVER_ACK` que passa pelo mesmo
+   caminho.
+
+Todas as gravações do store passam por um único lock, que preserva a ordem
+replicada. A vazão total do broker fica, portanto, presa ao tempo de fsync do
+disco. Os cenários de `examples/` medem esse teto; os números estão na task 017.
+Envio em lote e um fsync por grupo de registros são as alavancas, se o teto
+precisar subir.
+
+## A biblioteca cliente limita a "agressividade" de um sensor
+
+A biblioteca envia um `PUBLISH` por vez e espera o `PUBACK` antes do próximo.
+Um sensor que a usa, mesmo medindo a cada 1 ms, nunca tem mais de uma leitura
+em voo: o excesso fica no buffer dele. O escalonamento round-robin do broker e
+o limite de fila por sensor (RF-34, RF-38) protegem contra clientes que **não**
+seguem esse ritmo; isso é coberto nos testes do broker
+(`internal/broker/backpressure_test.go`). O cenário `justica` mede o efeito de
+sensores intensos que usam a biblioteca.
+
+## O consumidor segura até 64 mensagens antes de frear o broker
+
+A biblioteca cliente confirma cada `DELIVER` (`DELIVER_ACK`) assim que a
+mensagem entra no canal `Messages()`, que tem 64 posições, e não quando a
+aplicação termina de processá-la. Um consumidor lento só faz a fila do broker
+crescer depois que esse canal enche. Se a aplicação cair com mensagens no
+canal, elas já foram confirmadas e não voltam: a garantia "pelo menos uma vez"
+vale até a entrega à aplicação, não até o fim do processamento.

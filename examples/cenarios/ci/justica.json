@@ -1,0 +1,60 @@
+{
+  "name": "justica_ci",
+  "description": "Versão reduzida da justiça (RF-38, RNF-05): um sensor com intervalo de 1 ms entra no meio; o p95 dos sensores normais não pode passar de 2x a linha de base. Com a biblioteca cliente, cada sensor tem um PUBLISH em voo por vez.",
+  "seed": 3,
+  "duration": "16s",
+  "scrape_interval": "500ms",
+  "drain": "10s",
+  "cluster": {
+    "replicated": true,
+    "judge": true
+  },
+  "sensors": [
+    {
+      "group": "sensor",
+      "count": 5,
+      "continuous_ratio": 1,
+      "continuous_interval": "200ms",
+      "stagger": false
+    },
+    {
+      "group": "agressivo",
+      "count": 1,
+      "continuous_ratio": 1,
+      "continuous_interval": "1ms",
+      "stagger": false,
+      "start_at": "8s"
+    }
+  ],
+  "goals": [
+    {
+      "name": "RNF-05 p95 dos normais <= 2x a base",
+      "type": "latency_ratio",
+      "group": "sensor",
+      "quantile": 0.95,
+      "base": [
+        "2s",
+        "8s"
+      ],
+      "test": [
+        "9s",
+        "16s"
+      ],
+      "max_ratio": 2
+    },
+    {
+      "name": "Agressivo esteve ativo",
+      "type": "metric",
+      "process": "consumidor:consumidor-1",
+      "metric": "messages_received_total",
+      "labels": {
+        "group": "agressivo"
+      },
+      "min": 10
+    },
+    {
+      "name": "Sem perda",
+      "type": "no_loss"
+    }
+  ]
+}

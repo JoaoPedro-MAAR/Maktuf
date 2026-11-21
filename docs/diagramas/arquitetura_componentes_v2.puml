@@ -16,7 +16,7 @@ package "Broker primário" {
     usecase "Monitor de status\n(dormindo/offline)" as Monitor
     usecase "Gerenciador\nde Tópicos" as Gerenciador
     usecase "Armazenamento\npersistente" as StorageBroker
-    usecase "Replicação e\nheartbeat" as Replicacao
+    usecase "Replicação e\nheartbeat\n(aval do Juiz sem reserva)" as Replicacao
 
     Gateway --> Monitor
     Gateway --> Gerenciador
@@ -25,7 +25,11 @@ package "Broker primário" {
 }
 
 package "Broker reserva" {
-    usecase "Réplica\n(mesmos componentes\ndo primário)" as Replica
+    usecase "Réplica\n(mesmos componentes\ndo primário; papéis\ntrocam no failover)" as Replica
+}
+
+package "Endereço virtual (vip)" {
+    usecase "Proxy TCP\n(leva ao broker que\naceita o CONNECT)" as Vip
 }
 
 package "Juiz" {
@@ -44,12 +48,14 @@ package "Consumidor" {
     Tratamento --> App
 }
 
-LibA --> Gateway : TCP: PUBLISH / ACK(seq),\nSLEEP
-Gerenciador --> ClientConsumidor : TCP: distribui por\ntópico / ACK(seq)
-Replicacao --> Replica : TCP: REPLICA (leituras e\ninscrições) / ACK(seq)
-Replicacao --> Heartbeat : HEARTBEAT
-Replica --> Heartbeat : HEARTBEAT
-Coordenacao ..> Replica : PROMOVER: assume o IP\nvirtual (se o primário falhar)
-LibA ..> Replica : Failover: mesmo endereço\n(IP virtual)
+LibA --> Vip : TCP: PUBLISH / PUBACK(seq),\nSLEEP
+ClientConsumidor --> Vip : TCP: SUBSCRIBE /\nDELIVER / DELIVER_ACK
+Vip --> Gateway : repassa ao primário atual
+Vip ..> Replica : após o failover\n(reserva promovida)
+Replicacao --> Replica : TCP: REPLICA (registros\ndo store) / REPLICA_ACK
+Replicacao --> Heartbeat : HEARTBEAT / eco
+Replica --> Heartbeat : HEARTBEAT / eco
+Coordenacao ..> Replica : PROMOTE (primário sem\nheartbeat e reserva sincronizada)
+Coordenacao ..> Replicacao : PROMOTE(outro): antigo\nprimário volta como reserva
 
 @enduml

@@ -1,0 +1,18 @@
+{
+  "name": "referencia",
+  "description": "Perfil de referência do RNF-03 (CT-17): 200 sensores, 90% com 1 leitura a cada 5 min e 10% com 1 leitura/s, cluster replicado completo. Mede latência fim a fim (RNF-01), vazão e perda.",
+  "seed": 42,
+  "duration": "15m",
+  "scrape_interval": "2s",
+  "drain": "30s",
+  "cluster": { "replicated": true, "judge": true },
+  "sensors": [
+    { "group": "sensor", "count": 200, "continuous_ratio": 0.1, "low_interval": "5m", "continuous_interval": "1s" }
+  ],
+  "goals": [
+    { "name": "RNF-01 latencia p95 <= 2 s", "type": "latency", "group": "sensor", "quantile": 0.95, "window": ["1m", "15m"], "max": 2 },
+    { "name": "RNF-01 latencia p99 <= 10 s", "type": "latency", "group": "sensor", "quantile": 0.99, "window": ["1m", "15m"], "max": 10 },
+    { "name": "RNF-03 vazao >= 80% da oferta (20.6/s)", "type": "throughput", "window": ["5m", "15m"], "min": 16.5 },
+    { "name": "RNF-07 sem perda", "type": "no_loss" }
+  ]
+}

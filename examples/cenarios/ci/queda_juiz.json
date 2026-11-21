@@ -1,0 +1,17 @@
+{
+  "name": "queda_juiz_ci",
+  "description": "Versão reduzida da queda do Juiz (RF-48, CT-15): kill -9 no Juiz; com a reserva sincronizada, o fluxo de dados continua.",
+  "seed": 5,
+  "duration": "10s",
+  "scrape_interval": "250ms",
+  "drain": "10s",
+  "cluster": { "replicated": true, "judge": true, "failure_timeout": "1s", "check_interval": "100ms", "heartbeat_interval": "100ms", "fence_timeout": "500ms" },
+  "sensors": [
+    { "group": "sensor", "count": 3, "continuous_ratio": 1, "continuous_interval": "100ms", "stagger": false }
+  ],
+  "faults": [ { "at": "3s", "action": "kill", "target": "juiz" } ],
+  "goals": [
+    { "name": "RF-48 entregas continuam sem o Juiz", "type": "metric", "process": "consumidor:consumidor-1", "metric": "messages_received_total", "window": ["4s", "10s"], "min": 30 },
+    { "name": "Sem perda", "type": "no_loss" }
+  ]
+}

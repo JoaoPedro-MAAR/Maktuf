@@ -238,3 +238,55 @@ func TestServeStopsWithContext(t *testing.T) {
 		t.Fatalf("Serve nao encerrou com o contexto")
 	}
 }
+
+// Task 017: o runner lê o /metrics de volta; ParseText precisa reconstruir
+// exatamente o que WriteText escreveu.
+func TestParseTextRoundTrip(t *testing.T) {
+	r := metrics.NewRegistry()
+	c := r.NewCounter("pub_total", "Publicacoes\ncom \\ barra.", "topic", "sensor_id")
+	g := r.NewGauge("fila", "Fila.")
+	h := r.NewHistogram("lat_seconds", "Lat.", []float64{0.5, 1}, "group")
+	c.Inc(`sensores/"a"`, "a")
+	c.Add(3, "x,y", "b")
+	g.Set(-2.5)
+	h.Observe(0.25, "sensor")
+	h.Observe(2, "sensor")
+
+	want := r.Gather()
+	got, err := metrics.ParseText(strings.NewReader(expose(t, r)))
+	if err != nil {
+		t.Fatalf("ParseText: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("familias = %d, esperado %d", len(got), len(want))
+	}
+	for i := range want {
+		w, g := want[i], got[i]
+		if w.Name != g.Name || w.Help != g.Help || w.Type != g.Type || len(w.Samples) != len(g.Samples) {
+			t.Fatalf("familia %d = %+v, esperado %+v", i, g, w)
+		}
+		for j := range w.Samples {
+			ws, gs := w.Samples[j], g.Samples[j]
+			if ws.Suffix != gs.Suffix || ws.Value != gs.Value || len(ws.Labels) != len(gs.Labels) {
+				t.Fatalf("%s amostra %d = %+v, esperado %+v", w.Name, j, gs, ws)
+			}
+			for k := range ws.Labels {
+				if ws.Labels[k] != gs.Labels[k] {
+					t.Fatalf("%s rotulo = %+v, esperado %+v", w.Name, gs.Labels[k], ws.Labels[k])
+				}
+			}
+		}
+	}
+}
+
+func TestEstimateQuantileFromCumulativeBuckets(t *testing.T) {
+	bounds := []float64{1, 2, 4}
+	// 10 observações em (1,2] e nada nos demais.
+	cumulative := []uint64{0, 10, 10, 10}
+	if q := metrics.EstimateQuantile(0.5, bounds, cumulative); q != 1.5 {
+		t.Fatalf("p50 = %v, esperado 1.5", q)
+	}
+	if q := metrics.EstimateQuantile(0.5, bounds, []uint64{0, 0, 0, 0}); !math.IsNaN(q) {
+		t.Fatalf("sem dados = %v, esperado NaN", q)
+	}
+}

@@ -38,6 +38,10 @@ const (
 	DefaultLateWakeExtra      = 30 * time.Second
 	DefaultPublishTimeout     = 5 * time.Second
 	DefaultDrainTimeout       = 2 * time.Second
+
+	// burstFlushTimeout limita o envio imediato da rajada; o resto segue no
+	// buffer.
+	burstFlushTimeout = 30 * time.Second
 )
 
 // ErrInvalidConfig indica uma configuração do simulador fora dos limites.
@@ -104,6 +108,13 @@ type Config struct {
 	// a leitura continua no buffer e é reenviada depois.
 	PublishTimeout time.Duration
 
+	// BurstAt e BurstSize geram uma rajada (RF-35, RNF-04): BurstAt depois
+	// do início, BurstSize leituras no total, divididas entre os sensores,
+	// são gravadas de uma vez no buffer e enviadas em seguida. BurstSize zero
+	// desliga.
+	BurstAt   time.Duration
+	BurstSize int
+
 	// DrainTimeout é quanto cada sensor conectado espera, ao encerrar, para
 	// enviar as leituras ainda pendentes. Zero encerra sem drenar; o que
 	// ficar no buffer é enviado na próxima execução.
@@ -162,8 +173,10 @@ func (c Config) validate() error {
 		return fmt.Errorf("%w: tamanho do buffer negativo", ErrInvalidConfig)
 	case c.LowInterval < 0 || c.ContinuousInterval < 0:
 		return fmt.Errorf("%w: intervalo negativo", ErrInvalidConfig)
-	case c.FailureDowntime < 0 || c.SleepDuration < 0 || c.LateWakeExtra < 0 || c.PublishTimeout < 0 || c.DrainTimeout < 0:
+	case c.FailureDowntime < 0 || c.SleepDuration < 0 || c.LateWakeExtra < 0 || c.PublishTimeout < 0 || c.DrainTimeout < 0 || c.BurstAt < 0:
 		return fmt.Errorf("%w: duracao negativa", ErrInvalidConfig)
+	case c.BurstSize < 0:
+		return fmt.Errorf("%w: tamanho da rajada negativo", ErrInvalidConfig)
 	}
 	probs := map[string]float64{
 		"continuous-ratio": c.ContinuousRatio,
@@ -247,6 +260,7 @@ type counters struct {
 	failures        atomic.Uint64
 	sleeps          atomic.Uint64
 	lateWakes       atomic.Uint64
+	burstReadings   atomic.Uint64
 }
 
 // Simulator executa vários sensores simulados, um por goroutine.
@@ -328,6 +342,7 @@ func (s *Simulator) Run(ctx context.Context) error {
 	defer closeBuffers()
 
 	var wg sync.WaitGroup
+	sims := make([]*simSensor, len(s.specs))
 	for i, spec := range s.specs {
 		sim := &simSensor{
 			spec:   spec,
@@ -336,15 +351,48 @@ func (s *Simulator) Run(ctx context.Context) error {
 			buffer: buffers[i],
 			rng:    rand.New(rand.NewSource(s.cfg.Seed + int64(i))),
 			log:    s.cfg.Logger.With("sensor_id", spec.ID, "topic", spec.Topic, "perfil", spec.Profile.String()),
+			burstN: burstShare(s.cfg.BurstSize, len(s.specs), i),
 		}
+		if sim.burstN > 0 {
+			sim.burstCh = make(chan struct{}, 1)
+		}
+		sims[i] = sim
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			sim.run(ctx)
 		}()
 	}
+	if s.cfg.BurstSize > 0 {
+		go triggerBurst(ctx, s.cfg.BurstAt, sims)
+	}
 	wg.Wait()
 	return nil
+}
+
+// burstShare divide total entre n sensores: os primeiros recebem um a mais.
+func burstShare(total, n, i int) int {
+	share := total / n
+	if i < total%n {
+		share++
+	}
+	return share
+}
+
+// triggerBurst avisa os sensores no instante da rajada.
+func triggerBurst(ctx context.Context, at time.Duration, sims []*simSensor) {
+	t := time.NewTimer(at)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+		return
+	}
+	for _, sim := range sims {
+		if sim.burstCh != nil {
+			sim.burstCh <- struct{}{}
+		}
+	}
 }
 
 // Stats devolve um retrato dos contadores e dos buffers. Pode ser chamado
@@ -410,6 +458,10 @@ type simSensor struct {
 	offlineUntil time.Time
 	base         float64
 	temperature  float64
+
+	// burstN é a parte deste sensor na rajada; burstCh recebe o sinal.
+	burstN  int
+	burstCh chan struct{}
 }
 
 func (s *simSensor) run(ctx context.Context) {
@@ -422,7 +474,7 @@ func (s *simSensor) run(ctx context.Context) {
 	if s.cfg.Stagger {
 		start = time.Duration(s.rng.Int63n(int64(s.spec.Interval) + 1))
 	}
-	if !wait(ctx, start) {
+	if !s.pause(ctx, start) {
 		return
 	}
 
@@ -452,10 +504,59 @@ func (s *simSensor) run(ctx context.Context) {
 			// Sem rajada para recuperar medições atrasadas.
 			next = now
 		}
-		if !wait(ctx, time.Until(next)) {
+		if !s.pause(ctx, time.Until(next)) {
 			return
 		}
 	}
+}
+
+// pause espera d como wait, mas atende a rajada se ela chegar no meio.
+func (s *simSensor) pause(ctx context.Context, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return ctx.Err() == nil
+		}
+		t := time.NewTimer(remaining)
+		select {
+		case <-t.C:
+			return true
+		case <-ctx.Done():
+			t.Stop()
+			return false
+		case <-s.burstCh:
+			t.Stop()
+			if !s.burst(ctx) {
+				return false
+			}
+		}
+	}
+}
+
+// burst grava as leituras da rajada no buffer de uma vez e tenta enviá-las.
+// O que não sair agora continua no buffer e vai antes da próxima medição.
+func (s *simSensor) burst(ctx context.Context) bool {
+	now := time.Now()
+	for i := 0; i < s.burstN; i++ {
+		temperature := s.nextTemperature()
+		if _, err := s.buffer.Append(now, temperature); err != nil {
+			s.log.Error("falha ao gravar leitura da rajada no buffer", "error", err)
+			return false
+		}
+		s.stats.measured.Add(1)
+		s.stats.burstReadings.Add(1)
+	}
+	s.log.Info("rajada gerada", "leituras", s.burstN, "pendentes", s.buffer.Stats().Pending)
+	if s.client == nil {
+		return true
+	}
+	flushCtx, cancel := context.WithTimeout(ctx, burstFlushTimeout)
+	defer cancel()
+	if err := s.client.FlushPending(flushCtx); err != nil && ctx.Err() == nil {
+		s.log.Warn("rajada ainda no buffer", "pendentes", s.buffer.Stats().Pending, "error", err)
+	}
+	return ctx.Err() == nil
 }
 
 // measure gera uma leitura e a entrega à biblioteca. Desconectado, o sensor
@@ -531,11 +632,18 @@ func (s *simSensor) connect(ctx context.Context) {
 // shutdown tenta drenar o buffer antes de fechar a conexão. Usa um contexto
 // novo porque o da execução já foi cancelado.
 func (s *simSensor) shutdown() {
-	if s.client != nil && s.cfg.DrainTimeout > 0 && s.buffer.Stats().Pending > 0 {
+	if s.cfg.DrainTimeout > 0 && s.buffer.Stats().Pending > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.DrainTimeout)
-		if err := s.client.FlushPending(ctx); err != nil {
-			s.log.Warn("encerrando com leituras pendentes no buffer",
-				"pendentes", s.buffer.Stats().Pending, "error", err)
+		// Desconectado (downtime simulado ou sono), conecta só para drenar:
+		// o encerramento não é uma falha, então não deve deixar backlog.
+		if s.client == nil {
+			s.connect(ctx)
+		}
+		if s.client != nil {
+			if err := s.client.FlushPending(ctx); err != nil {
+				s.log.Warn("encerrando com leituras pendentes no buffer",
+					"pendentes", s.buffer.Stats().Pending, "error", err)
+			}
 		}
 		cancel()
 	}

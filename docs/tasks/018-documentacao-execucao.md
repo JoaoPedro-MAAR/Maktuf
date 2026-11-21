@@ -67,3 +67,15 @@ Bloqueia: entrega final da disciplina.
 
 - Validar os comandos do README num diretório temporário antes de concluir.
 - Manter o README curto e levar os detalhes para `docs/execucao.md`.
+
+## Pendências para revisão
+
+- [ ] **Regenerar `docs/diagramas/arquitetura_componentes_v2.png`.** O `.puml`
+      já foi atualizado (vip, `PROMOTE` nos dois sentidos, mensagens do
+      protocolo), mas o PNG ainda mostra a versão anterior, porque o PlantUML
+      não está instalado no ambiente de desenvolvimento. Gerar com
+      `plantuml docs/diagramas/arquitetura_componentes_v2.puml` ou pela
+      extensão PlantUML do VS Code ("Export Current Diagram").
+- [ ] **Revisar o diagrama de sequência** (`diagrama_sequencia.puml`) com o
+      mesmo olhar: endereço virtual simulado pelo vip e retorno do antigo
+      primário como reserva (tasks 013 e 014).

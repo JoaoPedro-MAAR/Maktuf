@@ -1,0 +1,18 @@
+{
+  "name": "consumidor_lento",
+  "description": "Consumidor lento (RF-36, RF-37, CT-10): o consumidor processa 5 leituras/s com 20 sensores a 1 leitura/s; a fila do assinante (50) estoura a retenção e as lacunas chegam sinalizadas com GAP_BEFORE.",
+  "seed": 45,
+  "duration": "60s",
+  "scrape_interval": "1s",
+  "drain": "60s",
+  "cluster": { "replicated": true, "judge": true, "subscriber_queue": 50 },
+  "sensors": [
+    { "group": "sensor", "count": 20, "continuous_ratio": 1, "continuous_interval": "1s" }
+  ],
+  "consumers": [ { "client_id": "lento", "process_delay": "200ms" } ],
+  "goals": [
+    { "name": "RF-37 descartes por retencao", "type": "metric", "process": "brokers", "metric": "retention_drops_total", "min": 1 },
+    { "name": "RF-37 lacuna sinalizada ao consumidor", "type": "metric", "process": "consumidor:lento", "metric": "sequence_gaps_total", "labels": { "cause": "retention" }, "min": 1 },
+    { "name": "Nenhuma lacuna sem marca", "type": "metric", "process": "consumidor:lento", "metric": "missing_readings_total", "labels": { "cause": "unmarked" }, "max": 0 }
+  ]
+}

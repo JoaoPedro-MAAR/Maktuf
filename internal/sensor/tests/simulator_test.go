@@ -83,12 +83,15 @@ func freeAddr(t *testing.T) string {
 // startConsumer roda o consumidor de exemplo e espera as inscrições.
 func startConsumer(t *testing.T, addr string) *consumer.Consumer {
 	t.Helper()
-	c, err := consumer.New(consumer.Config{
-		Addr:          addr,
-		RetryInterval: 10 * time.Millisecond,
-		Reconnect:     fastReconnect,
-		Logger:        discard,
-	})
+	return startConsumerWith(t, consumer.Config{Addr: addr})
+}
+
+func startConsumerWith(t *testing.T, cfg consumer.Config) *consumer.Consumer {
+	t.Helper()
+	cfg.RetryInterval = 10 * time.Millisecond
+	cfg.Reconnect = fastReconnect
+	cfg.Logger = discard
+	c, err := consumer.New(cfg)
 	if err != nil {
 		t.Fatalf("consumer.New: %v", err)
 	}
@@ -378,10 +381,55 @@ func TestSimulatorAndConsumerExposeMetrics(t *testing.T) {
 	}
 
 	waitFor(t, "consumidor receber tudo", func() bool { return cons.Stats().Received == st.Measured })
-	if got := metricValue(t, cons.Metrics(), "messages_received_total"); got != float64(st.Measured) {
+	if got := metricValue(t, cons.Metrics(), `messages_received_total{group="sensor"}`); got != float64(st.Measured) {
 		t.Fatalf("messages_received_total = %v, esperado %d", got, st.Measured)
 	}
-	if got := metricValue(t, cons.Metrics(), "end_to_end_latency_seconds_count"); got != float64(st.Measured) {
+	if got := metricValue(t, cons.Metrics(), `end_to_end_latency_seconds_count{group="sensor"}`); got != float64(st.Measured) {
 		t.Fatalf("end_to_end_latency_seconds_count = %v, esperado %d", got, st.Measured)
+	}
+}
+
+// Task 017 / RF-35: a rajada vai inteira para o buffer e chega toda ao
+// consumidor, em ordem e sem lacunas.
+func TestBurstIsAbsorbedByTheBuffer(t *testing.T) {
+	addr := freeAddr(t)
+	startBroker(t, addr, broker.Config{})
+	cons := startConsumer(t, addr)
+
+	cfg := baseConfig(t, addr)
+	cfg.ContinuousInterval = time.Second
+	cfg.BurstAt = 50 * time.Millisecond
+	cfg.BurstSize = 100
+
+	sim := runSimulator(t, cfg, func(s sensor.Stats) bool {
+		return s.Measured >= 103 && s.Pending == 0 && s.Confirmed >= s.Measured
+	})
+	if got := metricValue(t, sim.Metrics(), "sensor_burst_readings_total"); got != 100 {
+		t.Fatalf("sensor_burst_readings_total = %v, esperado 100", got)
+	}
+	st := sim.Stats()
+	waitFor(t, "consumidor receber a rajada", func() bool { return cons.Stats().Received == st.Measured })
+	if cs := cons.Stats(); cs.GapsUnmarked != 0 || cs.GapsMarked != 0 {
+		t.Fatalf("lacunas na rajada: %+v", cs)
+	}
+}
+
+// Task 017 / CT-10: ProcessDelay deixa o consumidor lento de propósito.
+func TestProcessDelaySlowsTheConsumer(t *testing.T) {
+	addr := freeAddr(t)
+	startBroker(t, addr, broker.Config{})
+	const delay = 30 * time.Millisecond
+	cons := startConsumerWith(t, consumer.Config{Addr: addr, ProcessDelay: delay})
+
+	cfg := baseConfig(t, addr)
+	cfg.Count = 1
+	cfg.ContinuousInterval = time.Second
+	cfg.BurstAt = 10 * time.Millisecond
+	cfg.BurstSize = 10
+	start := time.Now()
+	runSimulator(t, cfg, func(s sensor.Stats) bool { return s.Measured >= 11 && s.Pending == 0 })
+	waitFor(t, "consumidor receber tudo", func() bool { return cons.Stats().Received >= 11 })
+	if elapsed := time.Since(start); elapsed < 10*delay {
+		t.Fatalf("11 mensagens em %s; com atraso de %s deveriam levar ao menos %s", elapsed, delay, 10*delay)
 	}
 }

@@ -440,12 +440,30 @@ As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
 | DP-10 | Relógio | O sensor envia `age_ms`; o broker calcula o timestamp. | Evita dependência de sincronização de relógios. |
 | DP-11 | Codificação | Protocolo binário próprio sobre TCP. | Reduz overhead e permite controle do protocolo. |
 | DP-12 | Número de brokers | 2 brokers (primário e reserva) + 1 Juiz. | Atende à disponibilidade com complexidade inicial controlada. |
+| DP-13 | Promoção da reserva | O Juiz promove só a reserva sincronizada com índice de replicação maior ou igual ao último do primário; a reserva recusa o `PROMOTE` enquanto o primário ainda replica nela. | Nenhuma leitura confirmada falta na nova primária (RPO = 0) e não surgem dois primários numa partição Juiz↔primário. |
+| DP-14 | Anti split-brain | Sem reserva, o primário só confirma escritas com o eco do Juiz; sem ele, se isola. Um broker sobe sem atender até o Juiz decidir, e o primário deposto vira reserva. | Troca disponibilidade na dupla falha (Juiz e reserva) por nunca perder leituras confirmadas (ver ressalvas). |
+| DP-15 | Endereço virtual | Proxy TCP (`cmd/vip`) que leva cada conexão ao broker que aceita o `CONNECT`. | Cumpre RF-44, RF-48 e RF-49 sem root e com testes automáticos; simula o IP virtual (ver ressalvas). |
+| DP-16 | Retorno do antigo primário | Replicação em par com endereços simétricos; o antigo primário descarta o estado local e recebe a sincronização completa pelo fluxo `REPLICA` existente. | Fecha o ciclo de falhas sem mensagens novas no protocolo; escalabilidade horizontal está fora de escopo. |
+| DP-17 | Configuração | Executáveis configurados por flags; cenários de carga e falhas em arquivos JSON. | Reprodutível por configuração (RNF-22); a restrição de JSON vale só para o transporte. |
 
 ### 11.1 Pontos em aberto para discussão
 
 1. O requisito de "tópicos com ciclo de vida dinâmico" deve ser interpretado como criação apenas por inscrição ou também por publicação?
+   **Resolvido:** apenas por inscrição. O tópico nasce na primeira inscrição e
+   some quando o último inscrito cancela; publicação sem inscritos não cria
+   tópico e recebe `NO_SUBSCRIBERS` (RF-05, RF-07).
 2. A exclusão da mensagem deve ocorrer após o enfileiramento para todos os inscritos ou somente após o ACK de todos os consumidores?
+   **Resolvido:** em duas etapas. A leitura é gravada uma vez e enfileirada
+   para cada inscrito, sem cópia original separada (RF-08); a cópia de cada
+   consumidor só sai da fila dele com o `DELIVER_ACK` dele. Apagar antes do
+   ACK quebraria o "pelo menos uma vez" (RF-12), e esperar o ACK de todos
+   faria um consumidor lento segurar os demais (RF-36).
 3. Qual é o comportamento esperado quando um consumidor fica offline além do limite de retenção: descartar, bloquear o publicador ou notificar a aplicação?
+   **Resolvido:** descartar e notificar. A fila daquele consumidor no broker
+   descarta a leitura mais antiga depois da cabeça, e a próxima leitura do
+   mesmo sensor chega com `GAP_BEFORE` (RF-36, RF-37, CE-11). O publicador
+   nunca é bloqueado. A retenção por tempo do RF-39 ainda não foi
+   implementada (ver [ressalvas](../ressalvas.md)).
 4. O tópico de status deve seguir as mesmas regras de ciclo de vida dos tópicos de leitura?
    **Resolvido:** sim. É criado por inscrição, removido sem inscritos e não faz
    replay; transição sem inscritos é descartada.
@@ -460,6 +478,9 @@ As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
    store e as mesmas filas/cursor dos assinantes, com um fluxo de `seq` separado
    do fluxo de leituras do sensor.
 8. Qual é o nível mínimo de documentação da API da biblioteca exigido na Etapa 2?
+   **Resolvido:** godoc em todo identificador exportado de `internal/client`,
+   guia de uso em [biblioteca.md](../biblioteca.md) e funções `Example`
+   compiladas pelo `go test` (RNF-19).
 
 ---
 
