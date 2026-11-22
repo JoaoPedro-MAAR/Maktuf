@@ -469,6 +469,22 @@ As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
    **Resolvido:** sim. É criado por inscrição, removido sem inscritos e não faz
    replay; transição sem inscritos é descartada.
 5. Qual é o limite máximo de tamanho de mensagem e de buffer por sensor?
+   **Resolvido (Etapa 3):**
+   - **Mensagem: 1 MiB por quadro** (`MaxMessageSize`, já no protocolo). Uma
+     leitura tem ~35 a 100 bytes, e mesmo um `PUBLISH` com tópico e
+     `sensor_id` no tamanho máximo (strings de até 64 KiB) fica em ~128 KiB.
+     A folga atende a replicação, cujo registro de leitura leva a lista de
+     inscritos. O limite é verificado antes de alocar memória, então um
+     cliente defeituoso não derruba o broker.
+   - **Buffer do sensor: 86.400 leituras por padrão** (configurável por
+     `-buffer-size`). São 24 h de um sensor contínuo (1 leitura/s) sem
+     conexão, ou ~300 dias de um sensor de baixa taxa, o que cobre os
+     sensores que "ficam horas offline" do cenário. Ocupa ~2,5 MB (~30 bytes
+     por leitura). Ao encher, o buffer descarta a leitura mais antiga e o
+     consumidor vê a lacuna (RF-26). Esvaziar um buffer cheio leva ~35 a
+     40 min, porque o sensor envia uma leitura por vez; o RNF-02 aceita esse
+     atraso de recuperação, e a fila justa (DP-18) impede que ele afete os
+     outros sensores.
 6. O Juiz deve ser replicado para eliminar o ponto único de falha na coordenação?
    **Resolvido:** não nesta versão. Há 1 Juiz (DP-12); ele é ponto único de
    falha da coordenação, não dos dados: sem o Juiz os brokers seguem

@@ -51,7 +51,12 @@ O Maktuf é um middleware Publish/Subscribe escrito em Go 1.22, sem
 dependências externas. Tem cerca de 11 mil linhas de código, sem contar os
 testes, e 211 testes automatizados.
 
-![Diagrama de componentes](diagramas/arquitetura_componentes_v2.png)
+![Diagrama de componentes da versão final](diagramas/arquitetura_componentes_final.png)
+
+Os diagramas do [documento da Etapa 1](requisitos/Etapa%200%20e%201.md) ficam
+como foram entregues. Os desta seção mostram a arquitetura final: o endereço
+virtual virou um proxy TCP (vip), e entraram a fila justa, as filas por
+assinante com retenção e as métricas. Fontes em PlantUML em `docs/diagramas/`.
 
 ### 2.1 Componentes
 
@@ -68,6 +73,8 @@ testes, e 211 testes automatizados.
 | Aplicações de teste | `cmd/sensor`, `cmd/consumidor`, `examples/runner` | Simulador de N sensores, consumidor com verificação de ordem/lacunas/latência, gerador de carga e falhas |
 
 ### 2.2 Caminho de uma leitura
+
+![Diagrama de sequência da versão final](diagramas/diagrama_sequencia_final.png)
 
 1. O sensor grava a leitura no **buffer persistente** (fsync) com um `seq`
    crescente e a envia em um `PUBLISH`. O pacote leva a idade da leitura
@@ -109,7 +116,7 @@ testes, e 211 testes automatizados.
 | `PUBACK` só depois do fsync no primário **e** na reserva (DP-04) | RPO = 0 mesmo com `kill -9` no primário | Cada leitura paga fsync no sensor, no primário e na reserva, mais a ida e volta da replicação; a vazão fica presa ao disco | Seção 5.2: teto de ~43 leituras/s com réplica e acima de 41/s sem réplica |
 | Cursor de entrega (`DELIVER_ACK`) gravado e replicado **sem** fsync (ajuste da Etapa 3, DP-04) | Dobra o teto de vazão (de 4 para 2 fsyncs por leitura) | Numa queda da **máquina**, leituras já entregues podem voltar como duplicatas | Seção 6 |
 | Replicação síncrona serializada sob um único lock | Ordem idêntica no primário e na reserva; promoção simples | Todas as sessões passam por uma única fila de gravação; junto com a fila FIFO de entrega ao assinante, é o que limita a justiça em latência (seção 5.3) | Seções 5.2 e 5.3 |
-| Buffer persistente no sensor | Horas offline sem perder leituras; reenvio em ordem | Armazenamento e um fsync por leitura no dispositivo | `rajada` e `offline_sono` |
+| Buffer persistente no sensor, de 86.400 leituras por padrão (requisitos.md, 11.1 item 5) | Até 24 h offline (sensor contínuo) sem perder leituras; reenvio em ordem | ~2,5 MB e um fsync por leitura no dispositivo; esvaziar um buffer cheio leva ~40 min | `rajada` e `offline_sono` |
 | Fila limitada por sensor + fila justa (DP-06, DP-18) | Um sensor intenso não atrasa os outros (RNF-05) | Quem gera mais leituras espera mais; não há prioridade por tipo de sensor | `justica` |
 | Retenção limitada por assinante com `GAP_BEFORE` (DP-07) | Memória limitada; um consumidor lento não trava o publicador nem os outros consumidores | A garantia "pelo menos uma vez" vale só dentro da retenção; a lacuna é sinalizada, mas não é recuperada | `consumidor_lento` |
 | Idade da leitura em vez de relógio (DP-10) | Sensores sem relógio sincronizado | O instante tem o erro da medição de `age_ms` e do relógio do broker | - |

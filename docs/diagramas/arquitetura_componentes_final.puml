@@ -1,0 +1,69 @@
+@startuml arquitetura_componentes_final
+skinparam componentStyle uml2
+left to right direction
+title Maktuf - arquitetura final (Etapa 3)
+
+package "Sensor (cmd/sensor)" {
+    usecase "Sensor de\nTemperatura" as Temp
+    usecase "Buffer persistente\n(fsync por leitura;\noverflow descarta\na mais antiga)" as Buffer
+    usecase "Biblioteca cliente\n(reconexão com backoff,\nreenvio em ordem,\n1 PUBLISH em voo)" as LibS
+
+    Temp --> Buffer
+    Buffer --> LibS
+}
+
+package "Endereço virtual (cmd/vip)" {
+    usecase "Proxy TCP\n(leva cada conexão ao\nbroker que aceita o CONNECT)" as Vip
+}
+
+package "Broker primário (cmd/broker)" {
+    usecase "Sessões\n(fila limitada por sensor;\nbackpressure)" as Sessao
+    usecase "Escalonador\n(fila justa por sensor,\nDP-18)" as Sched
+    usecase "Gerenciador de tópicos\n(curingas; criado na\n1ª inscrição)" as Topicos
+    usecase "Monitor de status\n(dormindo / offline /\nonline)" as Monitor
+    usecase "Filas por assinante\n(cursor, retenção,\nGAP_BEFORE)" as FilaAss
+    usecase "Store persistente\n(WAL; fsync, exceto\no cursor de entrega)" as Store
+    usecase "Replicação e heartbeat\n(aval do Juiz\nsem reserva)" as Replicacao
+    usecase "Métricas\n(/metrics, Prometheus)" as Metricas
+
+    Sessao --> Sched
+    Sched --> Topicos
+    Sessao --> Monitor
+    Monitor --> Topicos
+    Topicos --> Store
+    Store --> Replicacao
+    Topicos --> FilaAss
+}
+
+package "Broker reserva (cmd/broker -role reserva)" {
+    usecase "Réplica\n(mesmo executável; recusa\nCONNECT até o PROMOTE)" as Reserva
+}
+
+package "Juiz (cmd/juiz)" {
+    usecase "Monitor de\nheartbeat" as Heartbeat
+    usecase "Decisão de promoção\n(reserva sincronizada,\níndice ≥ do primário)" as Decisao
+
+    Heartbeat --> Decisao
+}
+
+package "Consumidor (cmd/consumidor)" {
+    usecase "Biblioteca cliente\n(reconexão; refaz\nas inscrições)" as LibC
+    usecase "Deduplicação\n(sensor_id + seq)" as Dedup
+    usecase "Aplicação" as App
+
+    LibC --> Dedup
+    Dedup --> App
+}
+
+LibS --> Vip : TCP: CONNECT, PUBLISH,\nSLEEP / CONNACK, PUBACK
+LibC --> Vip : TCP: SUBSCRIBE, DELIVER_ACK /\nSUBACK, DELIVER
+Vip --> Sessao : repassa ao primário atual
+Vip ..> Reserva : após o failover\n(reserva promovida)
+FilaAss --> Vip : DELIVER (um por vez,\nespera o DELIVER_ACK)
+Replicacao --> Reserva : REPLICA (cada registro\ndo store) / REPLICA_ACK
+Replicacao --> Heartbeat : HEARTBEAT / eco
+Reserva --> Heartbeat : HEARTBEAT / eco
+Decisao ..> Reserva : PROMOTE
+Decisao ..> Replicacao : primário deposto\nvolta como reserva
+
+@enduml

@@ -88,7 +88,7 @@ inscritos, RF-07). Nesse modo, a aplicação cuida do `seq` e do reenvio.
 
 ```go
 buffer, err := storage.OpenSensorBuffer("data/sensor-a.buf", storage.BufferOptions{
-	MaxReadings: 10000, // ao encher, descarta a mais antiga (RF-26)
+	MaxReadings: 86400, // 24 h a 1 leitura/s; ao encher, descarta a mais antiga (RF-26)
 	SensorID:    "sensor-a",
 })
 defer buffer.Close()

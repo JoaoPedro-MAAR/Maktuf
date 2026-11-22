@@ -25,12 +25,11 @@ import (
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/storage"
 )
 
-// Valores padrão do perfil de referência (RNF-03). DefaultBufferSize é
-// provisório: o limite do buffer do sensor ainda é ponto em aberto
-// (requisitos.md, 11.1 item 5).
+// Valores padrão do perfil de referência (RNF-03). DefaultBufferSize cobre
+// 24 h de um sensor contínuo sem conexão (requisitos.md, 11.1 item 5).
 const (
 	DefaultIDPrefix           = "sensor"
-	DefaultBufferSize         = 10000
+	DefaultBufferSize         = 86400
 	DefaultContinuousRatio    = 0.1
 	DefaultLowInterval        = 5 * time.Minute
 	DefaultContinuousInterval = time.Second

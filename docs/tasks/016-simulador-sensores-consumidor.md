@@ -67,8 +67,9 @@ Se faltar operação na biblioteca (por exemplo, enviar `SLEEP`), adicioná-la e
    `GAP_BEFORE` (retenção do assinante) de lacuna sem marca (overflow do
    buffer do sensor ou perda).
 3. **Tamanho do buffer do sensor** (ponto em aberto 5 de `requisitos.md`):
-   flag `-buffer-size` com default provisório de 10000 leituras. O ponto
-   continua em aberto.
+   flag `-buffer-size` com default provisório de 10000 leituras. **Resolvido
+   na Etapa 3:** o padrão passou a 86.400 leituras (24 h de sensor
+   contínuo); ver o item 5 da seção 11.1 de `requisitos.md`.
 
 ## Critérios de aceitação
 
