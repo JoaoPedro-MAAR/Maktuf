@@ -15,6 +15,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,35 @@ const (
 // ErrInvalidConfig indica uma configuração do simulador fora dos limites.
 var ErrInvalidConfig = errors.New("sensor: configuracao invalida")
 
+// TopicIDPlaceholder é o trecho do modelo de tópico trocado pelo id do sensor.
+const TopicIDPlaceholder = "{id}"
+
+// DefaultTopicTemplate é o tópico padrão de um sensor.
+const DefaultTopicTemplate = "sensores/" + TopicIDPlaceholder + "/temperatura"
+
+// TopicFor devolve o tópico de publicação do sensor id a partir do modelo
+// (vazio usa o padrão).
+func TopicFor(template, id string) string {
+	if template == "" {
+		template = DefaultTopicTemplate
+	}
+	return strings.ReplaceAll(template, TopicIDPlaceholder, id)
+}
+
+// ValidPublishTopic diz se topic serve para publicar: níveis não vazios
+// separados por "/", sem curingas (mesmas regras do broker).
+func ValidPublishTopic(topic string) bool {
+	if topic == "" {
+		return false
+	}
+	for _, level := range strings.Split(topic, "/") {
+		if level == "" || strings.ContainsAny(level, "+#") {
+			return false
+		}
+	}
+	return true
+}
+
 // Profile é o perfil de taxa de um sensor simulado.
 type Profile int
 
@@ -74,6 +104,10 @@ type Config struct {
 	Count int
 	// IDPrefix forma os identificadores: <prefixo>-001, <prefixo>-002, ...
 	IDPrefix string
+	// Topic é o tópico de publicação. Vazio usa sensores/<id>/temperatura.
+	// "{id}" é trocado pelo id de cada sensor; sem "{id}", todos os sensores
+	// publicam no mesmo tópico (cada um com o próprio sensor_id e seq).
+	Topic string
 	// DataDir guarda um arquivo de buffer por sensor (<id>.buf). Reiniciar o
 	// simulador com o mesmo diretório e os mesmos ids retoma as pendências.
 	DataDir string
@@ -177,6 +211,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("%w: duracao negativa", ErrInvalidConfig)
 	case c.BurstSize < 0:
 		return fmt.Errorf("%w: tamanho da rajada negativo", ErrInvalidConfig)
+	case c.Topic != "" && !ValidPublishTopic(strings.ReplaceAll(c.Topic, TopicIDPlaceholder, "x")):
+		return fmt.Errorf("%w: topico %q (use niveis separados por /, sem + nem #)", ErrInvalidConfig, c.Topic)
 	}
 	probs := map[string]float64{
 		"continuous-ratio": c.ContinuousRatio,
@@ -210,7 +246,7 @@ func Specs(cfg Config) []Spec {
 		id := fmt.Sprintf("%s-%03d", cfg.IDPrefix, i+1)
 		spec := Spec{
 			ID:       id,
-			Topic:    "sensores/" + id + "/temperatura",
+			Topic:    TopicFor(cfg.Topic, id),
 			Profile:  ProfileLow,
 			Interval: cfg.LowInterval,
 		}

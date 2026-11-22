@@ -433,3 +433,46 @@ func TestProcessDelaySlowsTheConsumer(t *testing.T) {
 		t.Fatalf("11 mensagens em %s; com atraso de %s deveriam levar ao menos %s", elapsed, delay, 10*delay)
 	}
 }
+
+// Dois ou mais sensores podem publicar no mesmo tópico: cada um com o
+// próprio sensor_id e seq, e o consumidor recebe os fluxos de todos.
+func TestSensorsCanShareATopic(t *testing.T) {
+	addr := freeAddr(t)
+	startBroker(t, addr, broker.Config{})
+	cons := startConsumerWith(t, consumer.Config{Addr: addr, Filters: []string{"estacao/comum"}})
+
+	cfg := baseConfig(t, addr)
+	cfg.Topic = "estacao/comum"
+	sim := runSimulator(t, cfg, func(s sensor.Stats) bool { return s.Measured >= 15 })
+
+	for _, spec := range sim.Specs() {
+		if spec.Topic != "estacao/comum" {
+			t.Fatalf("%s publica em %q", spec.ID, spec.Topic)
+		}
+	}
+	st := sim.Stats()
+	if st.Pending != 0 {
+		t.Fatalf("backlog nao drenou: %+v", st)
+	}
+	waitFor(t, "consumidor receber tudo", func() bool { return cons.Stats().Received == st.Measured })
+	if cs := cons.Stats(); cs.Sensors != 3 || cs.GapsUnmarked != 0 {
+		t.Fatalf("consumidor = %+v, esperado 3 sensores sem lacunas", cs)
+	}
+}
+
+func TestTopicTemplate(t *testing.T) {
+	if got := sensor.TopicFor("", "a"); got != "sensores/a/temperatura" {
+		t.Fatalf("padrao = %q", got)
+	}
+	if got := sensor.TopicFor("x/{id}/y", "a"); got != "x/a/y" {
+		t.Fatalf("modelo = %q", got)
+	}
+	for topic, want := range map[string]bool{"a/b": true, "a//b": false, "a/+": false, "a/#": false, "": false} {
+		if got := sensor.ValidPublishTopic(topic); got != want {
+			t.Errorf("ValidPublishTopic(%q) = %v", topic, got)
+		}
+	}
+	if _, err := sensor.New(sensor.Config{Addr: "x:1", Count: 1, DataDir: t.TempDir(), Topic: "a/+/b"}); !errors.Is(err, sensor.ErrInvalidConfig) {
+		t.Fatalf("topico invalido: %v", err)
+	}
+}

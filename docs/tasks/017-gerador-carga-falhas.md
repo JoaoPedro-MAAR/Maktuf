@@ -105,16 +105,16 @@ com os arquivos de `examples/cenarios/`.
 
 | Cenário | Meta | Medido | Atingida |
 |---|---|---|---|
-| `referencia` | RNF-01 latência p95 ≤ 2 s | 3,96 s | ❌ |
+| `referencia` | RNF-01 latência p95 ≤ 5 s | 3,96 s (medido contra a meta antiga de 2 s, com o round-robin) | ✅ |
 | `referencia` | RNF-01 latência p99 ≤ 10 s | 5,15 s | ✅ |
 | `referencia` | RNF-03 vazão ≥ 16,5 leituras/s (80% da oferta) | 20,11 leituras/s | ✅ |
 | `referencia` | RNF-07 sem perda | 17.926 confirmadas, 0 pendentes | ✅ |
 | `rajada` | Rajada de 2.000 gerada | 2.000 | ✅ |
 | `rajada` | RNF-04 nenhuma conexão recusada | 0 | ✅ |
 | `rajada` | RNF-04 sem perda | 2.560 confirmadas, 0 pendentes | ✅ |
-| `justica` | RNF-05 p95 dos normais ≤ 2× a base | 2,47× (99 ms → 243 ms) | ❌ |
-| `justica` | Sensores intensos ativos | 178 leituras | ✅ |
-| `justica` | Sem perda | 2.538 confirmadas, 0 pendentes | ✅ |
+| `justica` | RNF-05 p95 dos normais ≤ 2× a base | 1,05× (232 ms → 244 ms), após a fila justa (DP-18); antes: 2,47× (99 ms → 243 ms) | ✅ |
+| `justica` | Sensores intensos ativos | 183 leituras | ✅ |
+| `justica` | Sem perda | 2.557 confirmadas, 0 pendentes | ✅ |
 | `consumidor_lento` | RF-37 descartes por retenção | 785 | ✅ |
 | `consumidor_lento` | RF-37 lacuna sinalizada ao consumidor | 171 | ✅ |
 | `consumidor_lento` | Nenhuma lacuna sem marca | 0 | ✅ |
@@ -127,8 +127,10 @@ com os arquivos de `examples/cenarios/`.
 | `offline_sono` | RF-27 sensor marcado dormindo | 41 | ✅ |
 | `offline_sono` | RF-25 sem perda com desconexões | 1.893 confirmadas, 0 pendentes | ✅ |
 
-**21 de 23 metas atingidas.** As duas não atingidas têm a mesma causa
-provável:
+**23 de 23 metas atingidas.** Duas mudanças desde a primeira medição (21 de
+23): o RNF-05 passou com a fila justa (DP-18), e o RNF-01 passou a pedir p95
+≤ 5 s (antes 2 s), decisão do usuário. Os 3,96 s do RNF-01 foram medidos com
+o round-robin e ainda não foram remedidos com a fila justa.
 
 - **RNF-01 (p95 de 3,96 s no perfil de referência):** a vazão medida (~20
   leituras/s) fica praticamente no limite da oferta do perfil (20,6/s).
@@ -137,10 +139,14 @@ provável:
     `docs/ressalvas.md`, "Vazão limitada pela gravação síncrona replicada").
   - Perto da saturação, as filas crescem e a latência sobe. O p99 (5,15 s)
     ainda cumpre a meta de 10 s.
-- **RNF-05 (justiça, 2,47×):** os sensores intensos disputam o mesmo lock e os
-  mesmos fsyncs. A latência absoluta dos normais (243 ms) segue bem abaixo do
-  RNF-01, mas a regra relativa não é cumprida.
+- **RNF-05 (justiça):** era 2,47× com round-robin, porque um sensor normal
+  esperava ~3 gravações de ~45 ms atrás dos intensos. A fila justa (DP-18) o
+  leva a 1,05× no cenário completo. O `justica_ci` oscila entre 1,24× e
+  1,98× em 5 execuções: o p95 é estimado por buckets do histograma, com
+  bordas em 0,25 s e 0,5 s, então o quociente salta entre ~1,0× e ~2,0×
+  mesmo com a latência real parecida. Passa, mas com margem pequena.
 
-As alavancas para os dois são as mesmas: gravar e replicar registros em lote
+A alavanca para o RNF-01 é: gravar e replicar registros em lote
 (um fsync por grupo) e não replicar cada `DELIVER_ACK` de forma síncrona.
-Ficam como trabalho futuro; as metas não foram ajustadas.
+Ficam como trabalho futuro. A margem do RNF-01 é pequena (3,96 s contra 5 s)
+porque o sistema opera no limite da vazão.

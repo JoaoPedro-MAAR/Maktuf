@@ -46,6 +46,21 @@ watch -n 1 'curl -s 127.0.0.1:9103/metrics | grep ^judge_broker_state'
 
 O painel deve mostrar `b1 1` e `b2 2`. Ainda **não** suba o consumidor.
 
+### Alternativa: painel web
+
+No lugar de T6 e T7, dá para usar o painel no navegador (ver
+[execucao.md](execucao.md), seção 4.1):
+
+```bash
+bin/painel -sensores sala-01,lab-02    # http://127.0.0.1:8080
+```
+
+Os passos funcionam igual, com botões no lugar dos comandos. Os brokers
+continuam sendo derrubados no terminal (`kill -9`); a coluna "Brokers"
+mostra o primário caindo na hora e a reserva assumindo uns segundos depois.
+Para o passo 2 (`NO_SUBSCRIBERS`), cancele antes a inscrição
+`sensores/+/temperatura` na coluna do consumidor.
+
 ## 1. Arquitetura (1 min)
 
 Mostre o diagrama `docs/diagramas/arquitetura_componentes_v2.png` e o painel:
@@ -123,7 +138,7 @@ kill -9 $(pgrep -f "id b1")
 - **T7:** digite `26` logo depois do kill. Pode aparecer "sem PUBACK por
   enquanto; fica no buffer". Repita depois de alguns segundos: `PERSISTED`.
 - **T6:** o consumidor **nunca foi reiniciado** e continua recebendo, sem
-  lacuna. Uma leitura pode aparecer como "repetida (descartada pela
+  lacuna. Uma leitura pode aparecer como "REPETIDA (descartada pela
   deduplicação)", o que é o "pelo menos uma vez" funcionando.
 
 **Ponto:** nenhum cliente sabe que o broker mudou. A leitura confirmada antes
@@ -175,7 +190,7 @@ quiser, rode um cenário curto ao vivo (~20 s):
 go run ./examples/runner -cenario examples/cenarios/ci/queda_primario.json
 ```
 
-Seja transparente sobre as duas metas não atingidas (RNF-01 p95 e RNF-05):
+Seja transparente sobre o limite de vazão (a margem do RNF-01 é pequena):
 o sistema fica perto do limite de vazão, porque cada leitura passa por fsync
 no sensor, no primário e na reserva. A causa técnica está em
 [ressalvas.md](ressalvas.md), seção "Vazão limitada pela gravação síncrona

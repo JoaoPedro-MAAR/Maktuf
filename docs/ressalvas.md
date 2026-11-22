@@ -262,7 +262,7 @@ precisar subir.
 
 A biblioteca envia um `PUBLISH` por vez e espera o `PUBACK` antes do próximo.
 Um sensor que a usa, mesmo medindo a cada 1 ms, nunca tem mais de uma leitura
-em voo: o excesso fica no buffer dele. O escalonamento round-robin do broker e
+em voo: o excesso fica no buffer dele. O escalonamento por fila justa do broker (DP-18) e
 o limite de fila por sensor (RF-34, RF-38) protegem contra clientes que **não**
 seguem esse ritmo; isso é coberto nos testes do broker
 (`internal/broker/backpressure_test.go`). O cenário `justica` mede o efeito de
@@ -276,3 +276,24 @@ aplicação termina de processá-la. Um consumidor lento só faz a fila do broke
 crescer depois que esse canal enche. Se a aplicação cair com mensagens no
 canal, elas já foram confirmadas e não voltam: a garantia "pelo menos uma vez"
 vale até a entrega à aplicação, não até o fim do processamento.
+
+## Um sensor_id, um fluxo de seq (tópicos)
+
+O broker numera e deduplica por `sensor_id`, e o cursor do consumidor também
+(`streamKey`); o tópico não entra na chave. Consequências:
+
+- **Vários sensores no mesmo tópico funciona**: cada um tem o próprio
+  `sensor_id`, `seq` e buffer (`-topico` sem `{id}`).
+- **Um mesmo `sensor_id` em dois tópicos compartilha um único fluxo de
+  `seq`.** Dois clientes com o mesmo id e buffers independentes começam ambos
+  em 1, e o broker trata as leituras do segundo como repetidas (confirma e
+  não entrega).
+- O buffer durável do sensor guarda `seq`, instante e temperatura, **sem
+  tópico**: ele atende um tópico por cliente (`SensorOptions.Topic`).
+
+Para publicar em outro tópico, o `sensor-manual publicar` usa um `sensor_id`
+de fluxo próprio (`<id>.<último nível>`), com `seq` iniciado no relógio, e
+**sem buffer durável**. A alternativa de ter vários tópicos no mesmo
+`sensor_id` exigiria chavear `seq`, cursor e store por (`sensor_id`, tópico)
+ou gravar o tópico em cada leitura do buffer; ambas mexem em persistência e
+replicação e não foram feitas.

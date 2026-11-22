@@ -18,6 +18,7 @@ O projeto prioriza alta confiabilidade por mensagem, alta disponibilidade e isol
 | `cmd/vip` | Endereço virtual: leva cada cliente ao primário atual |
 | `cmd/sensor`, `cmd/consumidor` | Simulador de sensores e consumidor de exemplo |
 | `cmd/sensor-manual`, `cmd/consumidor-manual` | Um sensor e um consumidor controlados pelo teclado, para demonstrações |
+| `cmd/painel` | Aplicação de exemplo com página web: sensores e consumidor comandados pelo navegador, brokers observados |
 | `internal/client` | Biblioteca cliente |
 | `examples/` | Gerador de carga e falhas e cenários de medição |
 
@@ -40,7 +41,7 @@ Para subir os processos na mão e provocar falhas, veja
 
 - [Execução](docs/execucao.md): compilar, subir o ambiente completo, provocar falhas, rodar cenários e ler métricas
 - [Biblioteca cliente](docs/biblioteca.md): API e exemplos para sensores e consumidores
-- [Roteiro de apresentação](docs/apresentacao.md): demonstração ao vivo, passo a passo
+- [Roteiro de apresentação](docs/teste.md): demonstração ao vivo, passo a passo
 - [Cenários de carga e falhas](examples/README.md): formato e leitura dos resultados
 - [Métricas](docs/metricas.md)
 - [Protocolo de aplicação](docs/protocolo.md)

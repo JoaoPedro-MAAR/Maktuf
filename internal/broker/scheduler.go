@@ -19,6 +19,10 @@ type publishJob struct {
 	// received é quando o PUBLISH foi lido do socket, antes de esperar slot;
 	// base da métrica ack_latency_seconds.
 	received time.Time
+	// start é a etiqueta de início da fila justa; arrival desempata etiquetas
+	// iguais pela ordem de chegada.
+	start   uint64
+	arrival uint64
 }
 
 // sensorQueue representa o fluxo de um sensor conectado: slots limita quantos
@@ -29,20 +33,32 @@ type sensorQueue struct {
 	slots    chan struct{}
 	jobs     []*publishJob
 	queued   bool
+	// finish é a etiqueta seguinte ao último job enfileirado deste sensor.
+	finish uint64
 }
 
-// scheduler processa as filas dos sensores em round-robin. Uma fila só volta ao
-// fim da lista depois de ceder um job, então um sensor agressivo não pode
-// starvar os sensores bem-comportados (RF-38).
+// scheduler processa as filas dos sensores por fila justa (start-time fair
+// queuing, custo 1 por leitura; DP-18). Cada job recebe a etiqueta
+// max(vtime, finish do sensor) e sai o de menor etiqueta:
+//   - com todos os sensores com fila, a ordem é a do rodízio e cada um tem
+//     a mesma fatia;
+//   - um sensor que usa menos que a sua fatia começa em vtime e passa à
+//     frente dos que têm backlog, esperando só o job em andamento
+//     (RF-38, RNF-05);
+//   - ocioso não acumula crédito, porque a etiqueta nunca fica abaixo de
+//     vtime;
+//   - sozinho, um sensor usa toda a capacidade.
 type scheduler struct {
-	mu      sync.Mutex
-	cond    *sync.Cond
-	ready   []*sensorQueue
-	queues  map[*sensorQueue]struct{}
-	process func(*protocol.Publish) (PublishResult, error)
-	closed  bool
-	done    chan struct{}
-	waits   atomic.Uint64
+	mu       sync.Mutex
+	cond     *sync.Cond
+	ready    []*sensorQueue
+	vtime    uint64
+	arrivals uint64
+	queues   map[*sensorQueue]struct{}
+	process  func(*protocol.Publish) (PublishResult, error)
+	closed   bool
+	done     chan struct{}
+	waits    atomic.Uint64
 }
 
 func newScheduler(process func(*protocol.Publish) (PublishResult, error)) *scheduler {
@@ -72,27 +88,34 @@ func (s *scheduler) run() {
 			return
 		}
 
-		q := s.ready[0]
-		s.ready[0] = nil
-		s.ready = s.ready[1:]
-		q.queued = false
-
-		if len(q.jobs) == 0 {
-			s.mu.Unlock()
-			continue
-		}
+		i := s.nextLocked()
+		q := s.ready[i]
 		job := q.jobs[0]
 		q.jobs[0] = nil
 		q.jobs = q.jobs[1:]
-		if len(q.jobs) > 0 {
-			q.queued = true
-			s.ready = append(s.ready, q)
+		if len(q.jobs) == 0 {
+			s.ready = append(s.ready[:i], s.ready[i+1:]...)
+			q.queued = false
 		}
+		s.vtime = job.start
 		s.mu.Unlock()
 
 		res, err := s.process(job.msg)
 		job.done <- publishOutcome{res: res, err: err}
 	}
+}
+
+// nextLocked devolve o índice, em ready, da fila cuja cabeça tem a menor
+// etiqueta. A busca é linear: ready só tem sensores com job pendente.
+func (s *scheduler) nextLocked() int {
+	best := 0
+	for i := 1; i < len(s.ready); i++ {
+		a, b := s.ready[i].jobs[0], s.ready[best].jobs[0]
+		if a.start < b.start || (a.start == b.start && a.arrival < b.arrival) {
+			best = i
+		}
+	}
+	return best
 }
 
 func (s *scheduler) register(q *sensorQueue) {
@@ -103,6 +126,10 @@ func (s *scheduler) register(q *sensorQueue) {
 
 func (s *scheduler) enqueue(q *sensorQueue, job *publishJob) {
 	s.mu.Lock()
+	job.start = max(s.vtime, q.finish)
+	q.finish = job.start + 1
+	job.arrival = s.arrivals
+	s.arrivals++
 	q.jobs = append(q.jobs, job)
 	if !q.queued {
 		q.queued = true

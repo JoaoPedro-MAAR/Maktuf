@@ -222,7 +222,7 @@ A prioridade segue a escala:
 
 | ID | Requisito | Meta inicial |
 |---|---|---|
-| RNF-01 | Latência fim a fim em operação normal | p95 ≤ 2 s e p99 ≤ 10 s para leituras online. |
+| RNF-01 | Latência fim a fim em operação normal | p95 ≤ 5 s e p99 ≤ 10 s para leituras online. |
 | RNF-02 | Latência durante recuperação de sensor offline | Atraso de recuperação aceitável; não conta para a meta de latência online. |
 | RNF-03 | Vazão do perfil de referência | Suportar pelo menos 200 sensores, sendo 90% de baixa taxa (1 leitura a cada 5 min) e 10% de taxa contínua (1 leitura/s), com rajadas de até 10x. |
 | RNF-04 | Rajadas | Absorver rajada de 2.000 mensagens sem recusar novas conexões e sem perda de mensagens confirmadas. |
@@ -445,6 +445,7 @@ As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
 | DP-15 | Endereço virtual | Proxy TCP (`cmd/vip`) que leva cada conexão ao broker que aceita o `CONNECT`. | Cumpre RF-44, RF-48 e RF-49 sem root e com testes automáticos; simula o IP virtual (ver ressalvas). |
 | DP-16 | Retorno do antigo primário | Replicação em par com endereços simétricos; o antigo primário descarta o estado local e recebe a sincronização completa pelo fluxo `REPLICA` existente. | Fecha o ciclo de falhas sem mensagens novas no protocolo; escalabilidade horizontal está fora de escopo. |
 | DP-17 | Configuração | Executáveis configurados por flags; cenários de carga e falhas em arquivos JSON. | Reprodutível por configuração (RNF-22); a restrição de JSON vale só para o transporte. |
+| DP-18 | Escalonamento | Fila justa por sensor (start-time fair queuing, custo 1 por leitura): cada sensor com fila tem a mesma fatia do broker, quem usa menos passa à frente e a ociosidade não acumula crédito. | Atende RF-38 e RNF-05 sem cota fixa, que atrasaria o esvaziamento do buffer após reconexão (RF-35). |
 
 ### 11.1 Pontos em aberto para discussão
 

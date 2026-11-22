@@ -33,6 +33,7 @@ go test -short ./...                       # sem os cenários reduzidos (~1 min)
 | `bin/consumidor` | Consumidor de exemplo (deduplicação, lacunas, latência); `-mostrar` imprime uma linha legível por leitura |
 | `bin/sensor-manual` | Um sensor controlado pelo teclado (publicar, rajada, dormir, cair, reconectar), para demonstrações |
 | `bin/consumidor-manual` | Um consumidor controlado pelo teclado (inscrever, cancelar, pausar, retomar), para demonstrações |
+| `bin/painel` | Aplicação de exemplo com página web: sensores e consumidor comandados pelo navegador; brokers, Juiz e vip observados |
 
 Todos aceitam `-h`. Com `-metrics-addr`, cada um expõe `/metrics`.
 
@@ -106,6 +107,49 @@ Para recomeçar do zero, pare tudo e apague `data/`.
 
 Cuidado ao usar `pkill -f "id b1"` dentro de um script: o padrão pode casar
 com a linha de comando do próprio script.
+
+## 4.0 Tópico dos sensores
+
+O tópico padrão de um sensor é `sensores/<id>/temperatura`. Com `-topico` (no
+`sensor` e no `sensor-manual`) ele pode ser outro; `{id}` vira o id do
+sensor, e sem `{id}` **todos os sensores publicam no mesmo tópico**, cada um
+com o próprio `sensor_id` e `seq`:
+
+```bash
+bin/sensor -count 3 -topico estacao/comum                     # 3 sensores, 1 tópico
+bin/sensor-manual -id a -topico estacao/{id}/leitura          # estacao/a/leitura
+bin/consumidor -filters estacao/comum                         # quem recebe
+```
+
+No `sensor-manual`, `publicar <topico> <temperatura>` publica **em outro
+tópico pela mesma conexão**, sem buffer durável e num fluxo próprio
+(`<id>.<último nível>`), porque o broker numera por `sensor_id`
+(ver [ressalvas](ressalvas.md)). O consumidor precisa assinar o tópico novo:
+os filtros padrão só cobrem `sensores/+/temperatura` e `sensores/+/status`.
+
+## 4.1 Painel web (aplicação de exemplo)
+
+Com o ambiente da seção 3 no ar (Juiz, b1, b2 e vip, com `-metrics-addr`):
+
+```bash
+bin/painel -sensores sala-01,lab-02
+# abrir http://127.0.0.1:8080
+```
+
+A página tem três colunas:
+- **Sensores:** adicionar sensores e, em cada um, enviar uma temperatura,
+  fazer rajada, dormir, desconectar e conectar. Cada ação mostra a resposta
+  (`PERSISTED`, `NO_SUBSCRIBERS`, "guardada no buffer"...).
+- **Brokers:** papel de cada broker (primário, reserva, fora do ar), fila dos
+  assinantes e se o Juiz e o vip estão no ar. Só observa: o failover se
+  provoca com `kill -9` no terminal.
+- **Consumidor:** as leituras chegando ao vivo, com latência, mudanças de
+  estado e avisos de perda; inscrever, cancelar, pausar e retomar.
+
+Os sensores e o consumidor da página são os mesmos do `sensor-manual` e do
+`consumidor-manual` e usam só a biblioteca cliente. As flags `-juiz-metrics`
+e `-broker-metrics` apontam para os `/metrics` observados; os padrões batem
+com as portas desta página.
 
 ## 5. Cenários de medição (task 017)
 
