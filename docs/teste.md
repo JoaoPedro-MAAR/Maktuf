@@ -46,6 +46,21 @@ watch -n 1 'curl -s 127.0.0.1:9103/metrics | grep ^judge_broker_state'
 
 O painel deve mostrar `b1 1` e `b2 2`. Ainda **não** suba o consumidor.
 
+### Alternativa: painel web
+
+No lugar de T6 e T7, dá para usar o painel no navegador (ver
+[execucao.md](execucao.md), seção 4.1):
+
+```bash
+bin/painel -sensores sala-01,lab-02    # http://127.0.0.1:8080
+```
+
+Os passos funcionam igual, com botões no lugar dos comandos. Os brokers
+continuam sendo derrubados no terminal (`kill -9`); a coluna "Brokers"
+mostra o primário caindo na hora e a reserva assumindo uns segundos depois.
+Para o passo 2 (`NO_SUBSCRIBERS`), cancele antes a inscrição
+`sensores/+/temperatura` na coluna do consumidor.
+
 ## 1. Arquitetura (1 min)
 
 Mostre o diagrama `docs/diagramas/arquitetura_componentes_v2.png` e o painel:

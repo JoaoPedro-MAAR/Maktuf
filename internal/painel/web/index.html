@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maktuf · painel</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --ink: #1d2330; --muted: #667085; --line: #d9dde5;
+    --ok: #1b7f3b; --ok-bg: #e5f4ea; --warn: #9a5b00; --warn-bg: #fff2d6;
+    --bad: #b42318; --bad-bg: #fde8e6; --info: #1f4fb5; --info-bg: #e7eefc;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 12px 20px; background: var(--card); border-bottom: 1px solid var(--line);
+           display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 20px; }
+  header .sub { color: var(--muted); }
+  main { display: grid; grid-template-columns: 1.2fr 0.8fr 1.3fr; gap: 16px; padding: 16px 20px; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px;
+            min-width: 0; }
+  section > h2 { margin: 0 0 10px; font-size: 17px; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  .title { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .title b { font-size: 16px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .b-ok { background: var(--ok-bg); color: var(--ok); }
+  .b-warn { background: var(--warn-bg); color: var(--warn); }
+  .b-bad { background: var(--bad-bg); color: var(--bad); }
+  .b-info { background: var(--info-bg); color: var(--info); }
+  input { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; width: 80px; }
+  input.wide { width: 240px; max-width: 100%; }
+  button { font: inherit; font-size: 13px; padding: 4px 10px; border: 1px solid var(--line);
+           border-radius: 6px; background: #fff; cursor: pointer; }
+  button:hover { background: var(--bg); }
+  button.primary { background: var(--info); border-color: var(--info); color: #fff; }
+  button.danger { color: var(--bad); }
+  .last { margin-top: 6px; font-size: 12px; color: var(--muted); white-space: pre-wrap; }
+  .feed { list-style: none; margin: 8px 0 0; padding: 0; max-height: 60vh; overflow: auto;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .feed li { padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  .feed li.status { background: var(--info-bg); }
+  .feed li.gap { background: var(--bad-bg); }
+  .feed li.dup { color: var(--muted); }
+  .feed li.acao { color: var(--muted); font-style: italic; }
+  .subs { margin: 6px 0; padding: 0; list-style: none; }
+  .subs li { display: flex; justify-content: space-between; align-items: center; padding: 3px 0;
+             font-family: ui-monospace, monospace; font-size: 13px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; margin: 6px 0; }
+  .stats span b { font-size: 15px; }
+  .err { color: var(--bad); font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Maktuf</h1>
+  <span class="sub">painel de demonstração · sensores → broker → consumidor</span>
+  <span class="sub" id="vip"></span>
+</header>
+<main>
+  <section>
+    <h2>Sensores</h2>
+    <div class="row">
+      <input class="wide" id="novo-sensor" placeholder="id do sensor (ex.: sala-01)">
+      <button class="primary" onclick="criarSensor()">Adicionar</button>
+    </div>
+    <div class="err" id="erro-sensores"></div>
+    <div id="sensores"></div>
+  </section>
+
+  <section>
+    <h2>Brokers</h2>
+    <div id="brokers"></div>
+    <p class="hint">Os brokers só são observados. Para testar o failover, derrube o primário no
+      terminal (<code>kill -9</code>) e acompanhe aqui e nos sensores.</p>
+  </section>
+
+  <section>
+    <h2>Consumidor <span class="meta" id="consumidor-id"></span></h2>
+    <div class="stats" id="consumidor-stats"></div>
+    <div class="row">
+      <input class="wide" id="filtro" placeholder="sensores/+/temperatura">
+      <button class="primary" onclick="filtro('inscrever')">Inscrever</button>
+      <button id="btn-pausa" onclick="pausa()">Pausar</button>
+    </div>
+    <div class="err" id="erro-consumidor"></div>
+    <ul class="subs" id="inscricoes"></ul>
+    <ul class="feed" id="feed"></ul>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const lastAction = {};
+let paused = false;
+
+function el(tag, props = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of children) e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return e;
+}
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method, headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.erro || ("erro " + res.status));
+  return data;
+}
+
+function badgeConexao(c) {
+  const map = { conectado: "b-ok", reconectando: "b-warn", desconectado: "b-bad", dormindo: "b-info" };
+  return el("span", { class: "badge " + (map[c] || "b-warn") }, c);
+}
+
+function sensorCard(s) {
+  const temp = el("input", { type: "number", step: "0.1", value: "25", title: "temperatura" });
+  const n = el("input", { type: "number", min: "1", value: "50", title: "quantidade" });
+  const seg = el("input", { type: "number", min: "1", value: "5", title: "segundos" });
+  const act = (path, body) => api("POST", "/api/sensores/" + s.id + "/" + path, body)
+    .then(r => { lastAction[s.id] = r.texto; refresh(); })
+    .catch(e => { lastAction[s.id] = e.message; refresh(); });
+  return el("div", { class: "card" },
+    el("div", { class: "title" },
+      el("b", {}, s.id),
+      el("span", {}, badgeConexao(s.conexao), " ",
+        s.ocupado ? el("span", { class: "badge b-warn" }, s.ocupado) : "")),
+    el("div", { class: "meta" },
+      `último seq ${s.ultimo_seq} · no buffer ${s.pendentes}` +
+      (s.descartes ? ` · descartadas por buffer cheio ${s.descartes}` : "")),
+    el("div", { class: "row" },
+      temp, el("button", { class: "primary", onclick: () => act("enviar", { temperatura: parseFloat(temp.value) }) }, "Enviar"),
+      n, el("button", { onclick: () => act("rajada", { quantidade: parseInt(n.value, 10), temperatura: parseFloat(temp.value) }) }, "Rajada")),
+    el("div", { class: "row" },
+      seg, el("button", { onclick: () => act("dormir", { segundos: parseFloat(seg.value) }) }, "Dormir (s)"),
+      s.conexao === "desconectado" || s.conexao === "dormindo"
+        ? el("button", { onclick: () => act("conectar") }, "Conectar")
+        : el("button", { onclick: () => act("desconectar") }, "Desconectar"),
+      el("button", { class: "danger", onclick: () => api("DELETE", "/api/sensores/" + s.id).then(refresh) }, "Remover")),
+    lastAction[s.id] ? el("div", { class: "last" }, lastAction[s.id].trim()) : "");
+}
+
+function renderSensores(list) {
+  const box = $("sensores");
+  // Não redesenha enquanto se digita num campo do cartão.
+  if (box.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
+  box.replaceChildren(...(list.length ? list.map(sensorCard)
+    : [el("p", { class: "hint" }, "Nenhum sensor. Adicione um acima.")]));
+}
+
+function renderBrokers(infra) {
+  const cards = [];
+  const papelBadge = (p) => ({
+    "primario": "b-ok", "reserva sincronizada": "b-info", "reserva sincronizando": "b-warn",
+    "isolado": "b-bad", "fora do ar": "b-bad",
+  }[p] || "b-warn");
+  for (const b of infra.brokers || []) {
+    cards.push(el("div", { class: "card" },
+      el("div", { class: "title" }, el("b", {}, b.id), el("span", { class: "badge " + papelBadge(b.papel) }, b.papel)),
+      b.observado && b.alcancavel
+        ? el("div", { class: "meta" }, `fila dos assinantes ${b.fila_assinantes} · leituras recebidas ${b.publicadas}` +
+            (b.papel === "primario" ? (b.reserva_sincronizada ? " · reserva em dia" : " · sem reserva em dia") : ""))
+        : ""));
+  }
+  if (!cards.length) cards.push(el("p", { class: "hint" }, "Sem informação dos brokers (informe -juiz-metrics ou -broker-metrics)."));
+  cards.push(el("div", { class: "card" },
+    el("div", { class: "title" }, el("b", {}, "Juiz"),
+      !infra.juiz_configurado ? el("span", { class: "badge b-warn" }, "não configurado")
+        : el("span", { class: "badge " + (infra.juiz_alcancavel ? "b-ok" : "b-bad") }, infra.juiz_alcancavel ? "no ar" : "fora do ar"))));
+  cards.push(el("div", { class: "card" },
+    el("div", { class: "title" }, el("b", {}, "vip " + infra.vip),
+      el("span", { class: "badge " + (infra.vip_alcancavel ? "b-ok" : "b-bad") }, infra.vip_alcancavel ? "no ar" : "fora do ar"))));
+  $("brokers").replaceChildren(...cards);
+  $("vip").textContent = "clientes conectam em " + infra.vip;
+}
+
+function renderConsumidor(c) {
+  $("consumidor-id").textContent = "(" + c.id + ", " + c.conexao + ")";
+  paused = c.pausado;
+  $("btn-pausa").textContent = c.pausado ? "Retomar" : "Pausar";
+  $("consumidor-stats").replaceChildren(
+    el("span", {}, "recebidas ", el("b", {}, c.recebidas)),
+    el("span", {}, "repetidas ", el("b", {}, c.repetidas)),
+    el("span", {}, "lacunas ", el("b", {}, c.lacunas_sem_marca + c.lacunas_retencao)),
+    c.pausado ? el("span", { class: "badge b-warn" }, "pausado") : "");
+  $("inscricoes").replaceChildren(...(c.inscricoes || []).map(f =>
+    el("li", {}, f, el("button", { onclick: () => { $("filtro").value = f; filtro("cancelar"); } }, "Cancelar"))));
+}
+
+async function refresh() {
+  try {
+    const st = await api("GET", "/api/estado");
+    renderSensores(st.sensores);
+    renderBrokers(st.infra);
+    renderConsumidor(st.consumidor);
+  } catch (e) { /* painel fora do ar: tenta de novo no próximo ciclo */ }
+}
+
+async function criarSensor() {
+  const id = $("novo-sensor").value.trim();
+  $("erro-sensores").textContent = "";
+  if (!id) return;
+  try { await api("POST", "/api/sensores", { id }); $("novo-sensor").value = ""; refresh(); }
+  catch (e) { $("erro-sensores").textContent = e.message; }
+}
+
+async function filtro(op) {
+  const f = $("filtro").value.trim();
+  $("erro-consumidor").textContent = "";
+  if (!f) return;
+  try { const r = await api("POST", "/api/consumidor/" + op, { filtro: f }); $("erro-consumidor").textContent = r.texto.includes("invalido") || r.texto.includes("falhou") ? r.texto.trim() : ""; refresh(); }
+  catch (e) { $("erro-consumidor").textContent = e.message; }
+}
+
+async function pausa() {
+  await api("POST", "/api/consumidor/" + (paused ? "retomar" : "pausar")).catch(() => {});
+  refresh();
+}
+
+function hora(t) { return new Date(t).toLocaleTimeString("pt-BR"); }
+
+function addFeed(ev) {
+  const feed = $("feed");
+  let li;
+  if (ev.tipo === "entrega") {
+    const d = ev.entrega;
+    if (d.tipo === "status") {
+      li = el("li", { class: "status" }, `${hora(ev.hora)}  ${d.sensor}  agora está ${d.estado.toUpperCase()}`);
+    } else if (d.tipo === "repetida" || d.tipo === "antiga") {
+      li = el("li", { class: "dup" }, `${hora(ev.hora)}  ${d.sensor}  seq ${d.seq} ${d.tipo} (descartada)`);
+    } else {
+      if (d.faltando > 0 || d.retencao) {
+        feed.prepend(el("li", { class: "gap" }, `${hora(ev.hora)}  ${d.sensor}  ⚠ ` +
+          (d.faltando > 0 ? `${d.faltando} leitura(s) ` : "leituras ") +
+          (d.retencao ? "perdidas por retenção da fila (GAP_BEFORE)" : "faltando (buffer do sensor cheio ou perda)")));
+      }
+      li = el("li", {}, `${hora(ev.hora)}  ${d.sensor}  seq ${d.seq}  ${d.temperatura.toFixed(2)} °C  ${d.latencia_ms} ms`);
+    }
+  } else {
+    li = el("li", { class: "acao" }, `${hora(ev.hora)}  [${ev.sensor}] ${ev.texto.trim()}`);
+  }
+  feed.prepend(li);
+  while (feed.children.length > 300) feed.lastChild.remove();
+}
+
+const source = new EventSource("/api/eventos");
+source.onmessage = (m) => addFeed(JSON.parse(m.data));
+$("novo-sensor").addEventListener("keydown", (e) => { if (e.key === "Enter") criarSensor(); });
+$("filtro").addEventListener("keydown", (e) => { if (e.key === "Enter") filtro("inscrever"); });
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>
