@@ -208,7 +208,8 @@ func sortedKeys[V any](m map[string]V) []string {
 
 // store persiste inscrições, leituras enfileiradas, cursores e o último seq de
 // cada sensor num WAL (internal/storage). Cada operação só retorna depois do
-// fsync, então o que o broker confirmou sobrevive a reinício. Mantém um espelho
+// fsync, então o que o broker confirmou sobrevive a reinício. A exceção é o
+// registro de DELIVER_ACK, gravado sem fsync (ver syncRecord). Mantém um espelho
 // do estado vivo para compactar o log. Sem diretório, funciona apenas em
 // memória e não persiste nada.
 type store struct {
@@ -236,7 +237,8 @@ func openStore(dir string) (*store, *storeState, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("broker: criar diretorio de dados: %w", err)
 	}
-	log, recs, err := storage.OpenRecordLog(filepath.Join(dir, storeFile), storeMagic, storeVersion)
+	log, recs, err := storage.OpenRecordLog(filepath.Join(dir, storeFile), storeMagic, storeVersion,
+		storage.WithUnsyncedTail())
 	if err != nil {
 		return nil, nil, fmt.Errorf("broker: abrir store: %w", err)
 	}
@@ -308,6 +310,23 @@ func (s *store) drop(clientID, sensorID string, seq uint64) error {
 	return s.write(storeRecord{kind: recDrop, client: clientID, sensor: sensorID, seq: seq})
 }
 
+// syncRecord diz se o registro exige fsync antes de retornar. O DELIVER_ACK
+// não exige: perdê-lo numa queda da máquina só faz o broker reentregar
+// leituras já entregues, que o consumidor descarta como repetidas (DP-04,
+// DP-09). Na queda do processo ele não se perde, e o próximo fsync do log o
+// grava junto. Os demais registros guardam leituras confirmadas com PUBACK ou
+// inscrições confirmadas com SUBACK/UNSUBACK e continuam com fsync.
+func syncRecord(kind storeRecordKind) bool {
+	return kind != recAck
+}
+
+func appendRecord(log *storage.RecordLog, kind storeRecordKind, raw []byte) error {
+	if syncRecord(kind) {
+		return log.Append(raw)
+	}
+	return log.AppendBuffered(raw)
+}
+
 func (s *store) write(rec storeRecord) error {
 	if !s.persistent() {
 		return nil
@@ -315,7 +334,7 @@ func (s *store) write(rec storeRecord) error {
 	raw := rec.encode()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.log.Append(raw); err != nil {
+	if err := appendRecord(s.log, rec.kind, raw); err != nil {
 		return fmt.Errorf("broker: persistir %s: %w", rec.kind, err)
 	}
 	s.state.apply(rec)
@@ -359,7 +378,7 @@ func (r replicaTarget) Apply(raw []byte) error {
 	s := r.s
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.log.Append(raw); err != nil {
+	if err := appendRecord(s.log, rec.kind, raw); err != nil {
 		return fmt.Errorf("broker: persistir replica %s: %w", rec.kind, err)
 	}
 	s.state.apply(rec)

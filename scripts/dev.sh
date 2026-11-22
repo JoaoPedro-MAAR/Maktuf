@@ -77,8 +77,21 @@ case "${1:-}" in
     GOBIN="$ROOT/bin" go install \
       github.com/golangci/golangci-lint/cmd/golangci-lint@"$GOLANGCI_LINT_VERSION"
     ;;
+  graficos-setup)
+    python3 -m venv "$ROOT/.venv"
+    "$ROOT/.venv/bin/python" -m pip install -q matplotlib
+    echo "matplotlib instalado em .venv/."
+    ;;
+  graficos)
+    if [ ! -x "$ROOT/.venv/bin/python" ]; then
+      echo ".venv nao encontrado. Rode: ./scripts/dev.sh graficos-setup"
+      exit 1
+    fi
+    shift
+    "$ROOT/.venv/bin/python" "$ROOT/scripts/graficos.py" "$@"
+    ;;
   *)
-    echo "Uso: $0 {setup|fmt|fmt-check|vet|lint|test|check|tools}"
+    echo "Uso: $0 {setup|fmt|fmt-check|vet|lint|test|check|tools|graficos-setup|graficos}"
     exit 1
     ;;
 esac

@@ -1,6 +1,6 @@
 {
   "name": "justica_ci",
-  "description": "Versão reduzida da justiça (RF-38, RNF-05): um sensor com intervalo de 1 ms entra no meio; o p95 dos sensores normais não pode passar de 2x a linha de base. Com a biblioteca cliente, cada sensor tem um PUBLISH em voo por vez.",
+  "description": "Versão reduzida da justiça (RF-38, RNF-05): um sensor com intervalo de 1 ms entra no meio; o p95 dos sensores normais não pode passar de 2x a linha de base + 0,5 s. Com a biblioteca cliente, cada sensor tem um PUBLISH em voo por vez.",
   "seed": 3,
   "duration": "16s",
   "scrape_interval": "500ms",
@@ -28,7 +28,7 @@
   ],
   "goals": [
     {
-      "name": "RNF-05 p95 dos normais <= 2x a base",
+      "name": "RNF-05 p95 dos normais <= 2x a base + 0,5 s",
       "type": "latency_ratio",
       "group": "sensor",
       "quantile": 0.95,
@@ -40,7 +40,8 @@
         "9s",
         "16s"
       ],
-      "max_ratio": 2
+      "max_ratio": 2,
+      "max_extra": 0.5
     },
     {
       "name": "Agressivo esteve ativo",

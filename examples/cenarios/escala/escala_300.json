@@ -1,0 +1,18 @@
+{
+  "name": "escala_300",
+  "description": "Escalabilidade (Etapa 3): 300 sensores com o mix do perfil de referência (90% a 1 leitura/5 min, 10% a 1 leitura/s), oferta de ~30.9 leituras/s. A série escala_* traça vazão e latência contra a carga oferecida para achar o ponto de saturação.",
+  "seed": 60,
+  "duration": "3m",
+  "scrape_interval": "2s",
+  "drain": "30s",
+  "cluster": { "replicated": true, "judge": true },
+  "sensors": [
+    { "group": "sensor", "count": 300, "continuous_ratio": 0.1, "low_interval": "5m", "continuous_interval": "1s" }
+  ],
+  "goals": [
+    { "name": "RNF-01 latencia p95 <= 5 s", "type": "latency", "group": "sensor", "quantile": 0.95, "window": ["1m", "3m"], "max": 5 },
+    { "name": "RNF-01 latencia p99 <= 10 s", "type": "latency", "group": "sensor", "quantile": 0.99, "window": ["1m", "3m"], "max": 10 },
+    { "name": "Vazao >= 80% da oferta (30.9/s)", "type": "throughput", "window": ["1m", "3m"], "min": 24.72 },
+    { "name": "Sem perda", "type": "no_loss" }
+  ]
+}

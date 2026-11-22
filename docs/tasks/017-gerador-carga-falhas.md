@@ -100,6 +100,11 @@ Como rodar e ler os resultados: `examples/README.md`.
 
 ## Resultados dos cenários completos
 
+> **Atualizado na Etapa 3:** os números abaixo são de 20/11/2026, antes da
+> fila justa estar em todos os cenários e antes do ajuste do `DELIVER_ACK` sem
+> fsync. Os resultados finais (22/11/2026, antes e depois do ajuste) estão em
+> [relatorio-final.md](../relatorio-final.md).
+
 Medidos em 20/11/2026, numa única máquina (WSL2, todos os processos locais),
 com os arquivos de `examples/cenarios/`.
 

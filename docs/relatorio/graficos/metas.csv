@@ -1,0 +1,54 @@
+cenario,meta,tipo,medido,alvo,atingida,detalhe
+consumidor_lento,RF-37 descartes por retencao,metric,799,>= 1,sim,ultimo valor coletado
+consumidor_lento,RF-37 lacuna sinalizada ao consumidor,metric,86,>= 1,sim,ultimo valor coletado
+consumidor_lento,Nenhuma lacuna sem marca,metric,0,<= 0,sim,ultimo valor coletado
+escala_100,RNF-01 latencia p95 <= 5 s,latency,p95 = 0.049 s,p95 <= 5.000 s,sim,1229 leituras do grupo sensor entre 1m0s e 3m0s
+escala_100,RNF-01 latencia p99 <= 10 s,latency,p99 = 0.083 s,p99 <= 10.000 s,sim,1229 leituras do grupo sensor entre 1m0s e 3m0s
+escala_100,Vazao >= 80% da oferta (10.3/s),throughput,10.24 leituras/s,>= 8.24 leituras/s,sim,1229 leituras recebidas entre 1m0s e 3m0s
+escala_100,Sem perda,no_loss,"confirmadas 1837, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 1837, lacunas sem marca 0"
+escala_200,RNF-01 latencia p95 <= 5 s,latency,p95 = 0.084 s,p95 <= 5.000 s,sim,2479 leituras do grupo sensor entre 1m0s e 3m0s
+escala_200,RNF-01 latencia p99 <= 10 s,latency,p99 = 0.189 s,p99 <= 10.000 s,sim,2479 leituras do grupo sensor entre 1m0s e 3m0s
+escala_200,Vazao >= 80% da oferta (20.6/s),throughput,20.66 leituras/s,>= 16.48 leituras/s,sim,2479 leituras recebidas entre 1m0s e 3m0s
+escala_200,Sem perda,no_loss,"confirmadas 3643, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 3643, lacunas sem marca 0"
+escala_300,RNF-01 latencia p95 <= 5 s,latency,p95 = 0.791 s,p95 <= 5.000 s,sim,3717 leituras do grupo sensor entre 1m0s e 3m0s
+escala_300,RNF-01 latencia p99 <= 10 s,latency,p99 = 0.963 s,p99 <= 10.000 s,sim,3717 leituras do grupo sensor entre 1m0s e 3m0s
+escala_300,Vazao >= 80% da oferta (30.9/s),throughput,30.98 leituras/s,>= 24.72 leituras/s,sim,3717 leituras recebidas entre 1m0s e 3m0s
+escala_300,Sem perda,no_loss,"confirmadas 5399, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 5399, lacunas sem marca 0"
+escala_400,RNF-01 latencia p95 <= 5 s,latency,p95 = 4.644 s,p95 <= 5.000 s,sim,4911 leituras do grupo sensor entre 1m0s e 3m0s
+escala_400,RNF-01 latencia p99 <= 10 s,latency,p99 = 4.929 s,p99 <= 10.000 s,sim,4911 leituras do grupo sensor entre 1m0s e 3m0s
+escala_400,Vazao >= 80% da oferta (41.2/s),throughput,40.92 leituras/s,>= 32.96 leituras/s,sim,4911 leituras recebidas entre 1m0s e 3m0s
+escala_400,Sem perda,no_loss,"confirmadas 6926, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 6926, lacunas sem marca 0"
+escala_50,RNF-01 latencia p95 <= 5 s,latency,p95 = 0.049 s,p95 <= 5.000 s,sim,612 leituras do grupo sensor entre 1m0s e 3m0s
+escala_50,RNF-01 latencia p99 <= 10 s,latency,p99 = 0.241 s,p99 <= 10.000 s,sim,612 leituras do grupo sensor entre 1m0s e 3m0s
+escala_50,Vazao >= 80% da oferta (5.15/s),throughput,5.10 leituras/s,>= 4.12 leituras/s,sim,612 leituras recebidas entre 1m0s e 3m0s
+escala_50,Sem perda,no_loss,"confirmadas 917, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 917, lacunas sem marca 0"
+escala_600,RNF-01 latencia p95 <= 5 s,latency,p95 = 9.610 s,p95 <= 5.000 s,nao,5210 leituras do grupo sensor entre 1m0s e 3m0s
+escala_600,RNF-01 latencia p99 <= 10 s,latency,p99 = 9.922 s,p99 <= 10.000 s,sim,5210 leituras do grupo sensor entre 1m0s e 3m0s
+escala_600,Vazao >= 80% da oferta (61.8/s),throughput,43.42 leituras/s,>= 49.44 leituras/s,nao,5210 leituras recebidas entre 1m0s e 3m0s
+escala_600,Sem perda,no_loss,"confirmadas 7574, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 7574, lacunas sem marca 0"
+escala_sem_replica_200,RNF-01 latencia p95 <= 5 s,latency,p95 = 0.047 s,p95 <= 5.000 s,sim,2478 leituras do grupo sensor entre 1m0s e 3m0s
+escala_sem_replica_200,RNF-01 latencia p99 <= 10 s,latency,p99 = 0.050 s,p99 <= 10.000 s,sim,2478 leituras do grupo sensor entre 1m0s e 3m0s
+escala_sem_replica_200,Vazao >= 80% da oferta (20.6/s),throughput,20.65 leituras/s,>= 16.48 leituras/s,sim,2478 leituras recebidas entre 1m0s e 3m0s
+escala_sem_replica_200,Sem perda,no_loss,"confirmadas 3638, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 3638, lacunas sem marca 0"
+escala_sem_replica_400,RNF-01 latencia p95 <= 5 s,latency,p95 = 0.050 s,p95 <= 5.000 s,sim,4949 leituras do grupo sensor entre 1m0s e 3m0s
+escala_sem_replica_400,RNF-01 latencia p99 <= 10 s,latency,p99 = 0.090 s,p99 <= 10.000 s,sim,4949 leituras do grupo sensor entre 1m0s e 3m0s
+escala_sem_replica_400,Vazao >= 80% da oferta (41.2/s),throughput,41.24 leituras/s,>= 32.96 leituras/s,sim,4949 leituras recebidas entre 1m0s e 3m0s
+escala_sem_replica_400,Sem perda,no_loss,"confirmadas 7094, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 7094, lacunas sem marca 0"
+justica,"RNF-05 p95 dos normais <= 2x a base + 0,5 s",latency_ratio,"2.93x (base 0.069 s, teste 0.203 s)",p95(teste) <= 2 x p95(base) + 0.5 s,sim,"1000 leituras na base, 1101 no teste; limite 0.639 s"
+justica,Agressivos estiveram ativos,metric,1239,>= 100,sim,ultimo valor coletado
+justica,Sem perda,no_loss,"confirmadas 3629, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 3629, lacunas sem marca 0"
+offline_sono,RF-28 sensor marcado offline,metric,25,>= 1,sim,ultimo valor coletado
+offline_sono,RF-27 sensor marcado dormindo,metric,44,>= 1,sim,ultimo valor coletado
+offline_sono,RF-25 sem perda com desconexoes,no_loss,"confirmadas 1968, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 1968, lacunas sem marca 0"
+queda_juiz,RF-48 entregas continuam sem o Juiz,metric,1100,>= 800,sim,variacao entre 35s e 1m30s
+queda_juiz,Sem perda,no_loss,"confirmadas 1790, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 1790, lacunas sem marca 0"
+queda_primario,RNF-06 RTO <= 30 s,rto,6.284 s,<= 30.000 s,sim,kill em b1 (30.002s) ate a primeira entrega nova
+queda_primario,RNF-07 sem perda (RPO = 0),no_loss,"confirmadas 1706, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 1706, lacunas sem marca 0"
+queda_primario,Failover concluido pelo Juiz,metric,1,>= 1,sim,ultimo valor coletado
+rajada,Rajada gerada por inteiro,metric,2000,>= 2000,sim,ultimo valor coletado
+rajada,RNF-04 nenhuma conexao recusada,metric,0,<= 0,sim,ultimo valor coletado
+rajada,RNF-04 sem perda,no_loss,"confirmadas 2890, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 2890, lacunas sem marca 0"
+referencia,RNF-01 latencia p95 <= 5 s,latency,p95 = 0.082 s,p95 <= 5.000 s,sim,17302 leituras do grupo sensor entre 1m0s e 15m0s
+referencia,RNF-01 latencia p99 <= 10 s,latency,p99 = 0.099 s,p99 <= 10.000 s,sim,17302 leituras do grupo sensor entre 1m0s e 15m0s
+referencia,RNF-03 vazao >= 80% da oferta (20.6/s),throughput,20.60 leituras/s,>= 16.5 leituras/s,sim,12361 leituras recebidas entre 5m0s e 15m0s
+referencia,RNF-07 sem perda,no_loss,"confirmadas 18456, pendentes 0","pendentes = 0, lacunas sem marca = 0, recebidas >= confirmadas",sim,"consumidor-1: recebidas 18456, lacunas sem marca 0"

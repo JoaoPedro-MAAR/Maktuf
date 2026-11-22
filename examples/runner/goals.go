@@ -149,6 +149,9 @@ func (e *evaluator) latency(g Goal, r *result) {
 func (e *evaluator) latencyRatio(g Goal, r *result) {
 	proc := e.s.consumerProc(g.Process)
 	r.target = fmt.Sprintf("p%s(teste) / p%s(base) <= %g", pct(g.Quantile), pct(g.Quantile), g.MaxRatio)
+	if g.MaxExtra > 0 {
+		r.target = fmt.Sprintf("p%s(teste) <= %g x p%s(base) + %g s", pct(g.Quantile), g.MaxRatio, pct(g.Quantile), g.MaxExtra)
+	}
 	base, nb, err := e.windowQuantile(proc, g.Group, g.Quantile, g.Base[0].D(), g.Base[1].D())
 	if err != nil {
 		r.measured, r.detail = "sem dados", "base: "+err.Error()
@@ -164,9 +167,10 @@ func (e *evaluator) latencyRatio(g Goal, r *result) {
 		return
 	}
 	ratio := test / base
+	limit := g.MaxRatio*base + g.MaxExtra
 	r.measured = fmt.Sprintf("%.2fx (base %s, teste %s)", ratio, secs(base), secs(test))
-	r.detail = fmt.Sprintf("%d leituras na base, %d no teste", nb, nt)
-	r.ok = ratio <= g.MaxRatio
+	r.detail = fmt.Sprintf("%d leituras na base, %d no teste; limite %s", nb, nt, secs(limit))
+	r.ok = test <= limit
 }
 
 func (e *evaluator) throughput(g Goal, r *result) {

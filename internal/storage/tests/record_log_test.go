@@ -154,3 +154,105 @@ func TestRecordLogRefusesAfterClose(t *testing.T) {
 		t.Fatalf("erro = %v, esperado ErrLogClosed", err)
 	}
 }
+
+func TestRecordLogBufferedRecordsSurviveReopen(t *testing.T) {
+	path := logPath(t)
+	l, _, err := storage.OpenRecordLog(path, logMagic, logVersion, storage.WithUnsyncedTail())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append([]byte("leitura")); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.AppendBuffered([]byte("ack")); err != nil {
+		t.Fatal(err)
+	}
+	// Sem Close: simula a queda do processo, com o registro só no cache do SO.
+	_, recs, err := storage.OpenRecordLog(path, logMagic, logVersion, storage.WithUnsyncedTail())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strs(recs); !reflect.DeepEqual(got, []string{"leitura", "ack"}) {
+		t.Fatalf("registros = %q", got)
+	}
+	_ = l.Close()
+}
+
+// Uma queda da máquina pode deixar a cauda não sincronizada corrompida ou
+// zerada, com registros depois dela; com WithUnsyncedTail, tudo a partir do
+// primeiro registro inválido é descartado.
+func TestRecordLogUnsyncedTailIsDiscarded(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		corrupt func(data []byte, at int) []byte
+	}{
+		{"crc invalido seguido de registro", func(data []byte, at int) []byte {
+			data[at+8] ^= 0xFF
+			return data
+		}},
+		{"cauda zerada seguida de registro", func(data []byte, at int) []byte {
+			for i := at; i < at+8+len("ack-1"); i++ {
+				data[i] = 0
+			}
+			return data
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := logPath(t)
+			l, _, err := storage.OpenRecordLog(path, logMagic, logVersion, storage.WithUnsyncedTail())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := l.Append([]byte("leitura")); err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range []string{"ack-1", "ack-2"} {
+				if err := l.AppendBuffered([]byte(r)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_ = l.Close()
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// cabeçalho (5) + registro "leitura" (8 + 7): início de "ack-1".
+			data = tc.corrupt(data, 5+8+len("leitura"))
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			l, recs, err := storage.OpenRecordLog(path, logMagic, logVersion, storage.WithUnsyncedTail())
+			if err != nil {
+				t.Fatalf("OpenRecordLog: %v", err)
+			}
+			defer func() { _ = l.Close() }()
+			if got := strs(recs); !reflect.DeepEqual(got, []string{"leitura"}) {
+				t.Fatalf("registros = %q", got)
+			}
+			if err := l.Append([]byte("novo")); err != nil {
+				t.Fatal(err)
+			}
+			_ = l.Close()
+			_, recs, err = storage.OpenRecordLog(path, logMagic, logVersion, storage.WithUnsyncedTail())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strs(recs); !reflect.DeepEqual(got, []string{"leitura", "novo"}) {
+				t.Fatalf("depois da reabertura: registros = %q", got)
+			}
+		})
+	}
+}
+
+func TestRecordLogUnsyncedTailRejectsEmptyRecord(t *testing.T) {
+	l, _, err := storage.OpenRecordLog(logPath(t), logMagic, logVersion, storage.WithUnsyncedTail())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	if err := l.AppendBuffered(nil); !errors.Is(err, storage.ErrInvalidConfig) {
+		t.Fatalf("erro = %v, esperado ErrInvalidConfig", err)
+	}
+}

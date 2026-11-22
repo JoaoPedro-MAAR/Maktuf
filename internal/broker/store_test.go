@@ -3,6 +3,7 @@ package broker
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -287,5 +288,56 @@ func TestReplicaSnapshotResetRoundTrip(t *testing.T) {
 	}
 	if st.cursors["c1"]["a"] != 1 || st.sensors["a"] != 2 || len(st.subs["c1"]) != 1 {
 		t.Fatalf("estado replicado incompleto: cursor=%v sensores=%v subs=%v", st.cursors, st.sensors, st.subs)
+	}
+}
+
+// Só o registro de DELIVER_ACK dispensa o fsync: os demais guardam o que foi
+// confirmado a clientes (PUBACK, SUBACK, UNSUBACK) ou a retenção (RF-37).
+func TestStoreOnlyAckSkipsFsync(t *testing.T) {
+	for kind := recSubscribe; kind <= recGapPending; kind++ {
+		if got, want := syncRecord(kind), kind != recAck; got != want {
+			t.Errorf("syncRecord(%s) = %v, esperado %v", kind, got, want)
+		}
+	}
+}
+
+func TestStoreAckSurvivesProcessCrash(t *testing.T) {
+	dir := t.TempDir()
+	s, _, err := openStore(dir)
+	must(t, err)
+	must(t, s.subscribe("c1", "sensores/a/temperatura"))
+	must(t, s.publish(deliver("a", 1), []string{"c1"}))
+	must(t, s.publish(deliver("a", 2), []string{"c1"}))
+	must(t, s.ack("c1", "a", 1))
+
+	// Sem close: o ACK sem fsync está só no cache do SO.
+	_, st := mustOpenStore(t, dir)
+	if got := queueSeqs(st.queues["c1"]); !reflect.DeepEqual(got, []string{"a/2"}) {
+		t.Fatalf("fila recuperada = %v, esperado [a/2]", got)
+	}
+	_ = s.close()
+}
+
+// Numa queda da máquina, um ACK sem fsync pode chegar ao disco pela metade.
+// O store sobe sem ele e a leitura volta a ser entregue (duplicata, DP-09).
+func TestStoreTornAckTailMeansRedelivery(t *testing.T) {
+	dir := t.TempDir()
+	s, _, err := openStore(dir)
+	must(t, err)
+	must(t, s.subscribe("c1", "sensores/a/temperatura"))
+	must(t, s.publish(deliver("a", 1), []string{"c1"}))
+	must(t, s.ack("c1", "a", 1))
+	must(t, s.close())
+
+	path := filepath.Join(dir, storeFile)
+	data, err := os.ReadFile(path)
+	must(t, err)
+	data[len(data)-1] ^= 0xFF                // ACK corrompido...
+	data = append(data, make([]byte, 16)...) // ...seguido de lixo zerado.
+	must(t, os.WriteFile(path, data, 0o600))
+
+	_, st := mustOpenStore(t, dir)
+	if got := queueSeqs(st.queues["c1"]); !reflect.DeepEqual(got, []string{"a/1"}) {
+		t.Fatalf("fila recuperada = %v, esperado [a/1] para reentrega", got)
 	}
 }

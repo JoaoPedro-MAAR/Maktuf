@@ -69,6 +69,11 @@ func TestShippedScenariosLoad(t *testing.T) {
 	if len(files) < 14 {
 		t.Fatalf("esperava 7 cenarios completos e 7 reduzidos, achei %d", len(files))
 	}
+	escala, _ := filepath.Glob("../cenarios/escala/*.json")
+	if len(escala) == 0 {
+		t.Fatal("nenhum cenario de escala em cenarios/escala")
+	}
+	files = append(files, escala...)
 	for _, f := range files {
 		if _, err := Load(f); err != nil {
 			t.Errorf("%v", err)
@@ -149,6 +154,18 @@ func TestLatencyRatioGoal(t *testing.T) {
 	}
 	if !strings.HasPrefix(r.measured, "2.05x") {
 		t.Fatalf("razao = %s, esperado 2.05x (0.975/0.475)", r.measured)
+	}
+
+	// Com folga absoluta: limite = 2 * 0.475 + 0.05 = 1.0 s >= 0.975 s.
+	r = e.evaluate(Goal{Name: "justica", Type: goalLatencyRatio, Group: "sensor", Quantile: 0.95,
+		Base: dur(0, 2*time.Second), Test: dur(2*time.Second, 4*time.Second), MaxRatio: 2, MaxExtra: 0.05})
+	if !r.ok {
+		t.Fatalf("teste %s nao passou com limite 2x base + 0.05 s (%s)", r.measured, r.detail)
+	}
+	r = e.evaluate(Goal{Name: "justica", Type: goalLatencyRatio, Group: "sensor", Quantile: 0.95,
+		Base: dur(0, 2*time.Second), Test: dur(2*time.Second, 4*time.Second), MaxRatio: 2, MaxExtra: 0.02})
+	if r.ok {
+		t.Fatalf("teste %s passou com limite 2x base + 0.02 s = 0.97 s", r.measured)
 	}
 }
 

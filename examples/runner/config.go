@@ -113,6 +113,9 @@ type Goal struct {
 	Min      *float64          `json:"min"`
 	Max      *float64          `json:"max"`
 	MaxRatio float64           `json:"max_ratio"`
+	// MaxExtra (s), em latency_ratio, soma uma folga absoluta ao limite:
+	// teste <= max_ratio * base + max_extra.
+	MaxExtra float64 `json:"max_extra"`
 }
 
 const (
@@ -254,8 +257,8 @@ func (s *Scenario) validateGoal(g Goal, groups, consumers map[string]bool) error
 		}
 		return window(g.Window)
 	case goalLatencyRatio:
-		if !groups[g.Group] || g.Quantile <= 0 || g.Quantile >= 1 || g.MaxRatio <= 0 || !consumerOK {
-			return errors.New("latency_ratio exige group, quantile, max_ratio e process de consumidor")
+		if !groups[g.Group] || g.Quantile <= 0 || g.Quantile >= 1 || g.MaxRatio <= 0 || g.MaxExtra < 0 || !consumerOK {
+			return errors.New("latency_ratio exige group, quantile, max_ratio, max_extra >= 0 e process de consumidor")
 		}
 		if err := window(g.Base); err != nil {
 			return err

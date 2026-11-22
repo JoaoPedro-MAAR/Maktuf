@@ -226,7 +226,7 @@ A prioridade segue a escala:
 | RNF-02 | Latência durante recuperação de sensor offline | Atraso de recuperação aceitável; não conta para a meta de latência online. |
 | RNF-03 | Vazão do perfil de referência | Suportar pelo menos 200 sensores, sendo 90% de baixa taxa (1 leitura a cada 5 min) e 10% de taxa contínua (1 leitura/s), com rajadas de até 10x. |
 | RNF-04 | Rajadas | Absorver rajada de 2.000 mensagens sem recusar novas conexões e sem perda de mensagens confirmadas. |
-| RNF-05 | Justiça | A latência p95 de um sensor bem-comportado não pode ultrapassar 2x a linha de base quando outro sensor estiver saturado. |
+| RNF-05 | Justiça | A latência p95 de um sensor bem-comportado não pode ultrapassar 2x a linha de base + 0,5 s quando outro sensor estiver saturado. A folga absoluta (revisão da Etapa 3) evita que uma base muito baixa, de dezenas de ms, torne o critério mais rígido do que a latência relaxada do cenário (RNF-01: 5 s). |
 | RNF-06 | Failover | RTO ≤ 30 s para o broker reserva assumir e clientes reconectarem. |
 | RNF-07 | Perda de dados | RPO = 0 para leituras confirmadas com ACK. |
 | RNF-08 | Disponibilidade | Alvo de 99,9% de disponibilidade do serviço durante os testes, desconsiderando falhas programadas. |
@@ -431,7 +431,7 @@ As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
 | DP-01 | Criação de tópico | O tópico é criado na primeira inscrição e removido quando o último inscrito cancela. | Alinha o ciclo de vida dinâmico com a regra de descarte quando não há inscritos. |
 | DP-02 | Publicação sem inscritos | A mensagem é descartada e o publicador recebe `NO_SUBSCRIBERS`. | Atende ao requisito mínimo e evita retenção indefinida. |
 | DP-03 | Sem replay histórico | Novos inscritos recebem apenas mensagens futuras. | Simplifica o modelo e evita armazenamento de histórico não previsto no cenário. |
-| DP-04 | ACK de leitura | O ACK significa persistência no primário e, enquanto a reserva estiver sincronizada, replicação na reserva. Com a reserva indisponível, o primário confirma só com o próprio disco (modo degradado). | Garante RPO zero para leituras confirmadas com a reserva sincronizada, sem tornar a reserva um segundo ponto de falha. |
+| DP-04 | ACK de leitura | O ACK significa persistência no primário e, enquanto a reserva estiver sincronizada, replicação na reserva. Com a reserva indisponível, o primário confirma só com o próprio disco (modo degradado). O registro do `DELIVER_ACK` (cursor de entrega) é gravado e replicado sem fsync: numa queda da máquina, ele pode se perder e a leitura é reentregue como duplicata. | Garante RPO zero para leituras confirmadas com a reserva sincronizada, sem tornar a reserva um segundo ponto de falha. Tirar o fsync do cursor reduz de 4 para 2 fsyncs por leitura e dobra o teto de vazão (Etapa 3); perder um cursor só gera duplicata, nunca perda. |
 | DP-05 | Exclusão após entrega | A cópia original é removida após o enfileiramento para todos os inscritos; cada fila mantém sua própria retenção. | Permite apagar a mensagem sem perder entregas pendentes de consumidores lentos. |
 | DP-06 | Backpressure | Ao encher a fila de um sensor, o broker para de confirmar aquele sensor; os demais não são afetados. | Preserva confiabilidade e justiça. |
 | DP-07 | Consumidor lento | Cada assinante tem fila limitada; ao exceder a retenção, a lacuna é explicitada. | Evita perda silenciosa e bloqueio global. |
