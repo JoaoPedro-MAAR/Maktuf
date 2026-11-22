@@ -30,7 +30,9 @@ go test -short ./...                       # sem os cenários reduzidos (~1 min)
 | `bin/juiz` | Coordena o failover: heartbeat, detecção e promoção |
 | `bin/vip` | Endereço virtual: o único endereço que os clientes conhecem |
 | `bin/sensor` | Simulador de N sensores (perfis, falhas, sono, rajada) |
-| `bin/consumidor` | Consumidor de exemplo (deduplicação, lacunas, latência) |
+| `bin/consumidor` | Consumidor de exemplo (deduplicação, lacunas, latência); `-mostrar` imprime uma linha legível por leitura |
+| `bin/sensor-manual` | Um sensor controlado pelo teclado (publicar, rajada, dormir, cair, reconectar), para demonstrações |
+| `bin/consumidor-manual` | Um consumidor controlado pelo teclado (inscrever, cancelar, pausar, retomar), para demonstrações |
 
 Todos aceitam `-h`. Com `-metrics-addr`, cada um expõe `/metrics`.
 
@@ -79,7 +81,9 @@ Como funciona:
   depois de um failover, os papéis se invertem sozinhos.
 - **O b1 não atende antes de a reserva sincronizar nele ou de o Juiz o
   promover:** um broker nunca vira primário sozinho.
-- **Os clientes só conhecem o vip** (`:7070`).
+- **Os clientes só conhecem o vip** (`:7070`), que é o `-addr` padrão do
+  `sensor`, do `consumidor` e do `sensor-manual`. Com um broker sozinho (sem
+  vip), passe o endereço dele: `-addr 127.0.0.1:7000`.
 
 Para acompanhar quem é o primário (`1` = primário, `2` = reserva
 sincronizada, `3` = reserva sincronizando, `4` = isolado, `0` = fora do ar):
@@ -135,6 +139,7 @@ histograma.
 | Sintoma | Causa provável |
 |---|---|
 | `address already in use` | Outra instância rodando; mude as portas ou pare a anterior |
+| Cliente repete `status TEMPORARY_FAILURE` | Ele está apontando direto para a reserva (ou para um primário isolado). Use o vip (`-addr 127.0.0.1:7070`), que leva sempre ao primário atual |
 | Broker primário não aceita clientes ao subir | Ele espera o Juiz ou a reserva sincronizar nele; confira se o Juiz e a reserva estão no ar |
 | Sensores com `sem_inscritos` > 0 | O consumidor subiu depois dos sensores ou sem inscrição; sem inscritos, a leitura é descartada (RF-07) |
 | Failover não acontece | O Juiz só decide depois de ouvir os brokers por um prazo de falha completo; logo depois de subir, aguarde |

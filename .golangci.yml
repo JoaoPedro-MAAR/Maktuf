@@ -17,6 +17,9 @@ linters-settings:
     ignore-words:
       - clientes
       - sensores
+      - comando
+      - comandos
+      - persistente
   revive:
     rules:
       - name: blank-imports

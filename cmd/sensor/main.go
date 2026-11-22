@@ -16,10 +16,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JoaoPedro-MAAR/Maktuf/internal/broker"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/client"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/metrics"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/sensor"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/vip"
 )
 
 func main() {
@@ -31,7 +31,7 @@ func main() {
 
 func run() error {
 	var cfg sensor.Config
-	flag.StringVar(&cfg.Addr, "addr", broker.DefaultAddr, "endereco TCP do broker")
+	flag.StringVar(&cfg.Addr, "addr", vip.DefaultAddr, "endereco do vip (ambiente completo); para um broker sozinho, o endereco dele, ex.: 127.0.0.1:7000")
 	flag.IntVar(&cfg.Count, "count", 10, "quantidade de sensores simulados")
 	flag.StringVar(&cfg.IDPrefix, "id-prefix", sensor.DefaultIDPrefix, "prefixo dos ids dos sensores (<prefixo>-001, ...)")
 	flag.StringVar(&cfg.DataDir, "data-dir", "data/sensores", "diretorio dos buffers persistentes (um arquivo por sensor)")
