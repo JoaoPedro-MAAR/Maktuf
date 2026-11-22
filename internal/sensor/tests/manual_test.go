@@ -176,6 +176,56 @@ func TestManualReportsReconnectingWhenBrokerIsGone(t *testing.T) {
 	}
 }
 
+// "publicar" usa a mesma conexão para outro tópico, num fluxo próprio: o seq
+// não colide com o do buffer e a leitura chega ao consumidor desse tópico.
+func TestManualPublishToAnotherTopic(t *testing.T) {
+	addr := freeAddr(t)
+	startBroker(t, addr, broker.Config{})
+	temp := startConsumer(t, addr)
+	humidity := startConsumerWith(t, consumer.Config{
+		Addr: addr, ClientID: "umidade", Filters: []string{"sensores/+/umidade"},
+	})
+
+	out := runManual(t, newManual(t, addr, t.TempDir()),
+		"20\npublicar sensores/demo/umidade 55\npublicar sensores/demo/umidade 56\n21\npublicar sensores/+/x 1\npublicar so-um-arg\nsair\n")
+	expectContains(t, "saida", out,
+		"seq=1 PERSISTED",
+		"sensores/demo/umidade (fluxo demo.umidade, seq=",
+		"PERSISTED",
+		"seq=2 PERSISTED",
+		`topico invalido "sensores/+/x"`,
+		"uso: publicar <topico> <temperatura>",
+	)
+	waitFor(t, "consumidor de umidade", func() bool { return humidity.Stats().Received == 2 })
+	waitFor(t, "consumidor de temperatura", func() bool { return temp.Stats().Received == 2 })
+	if hs := humidity.Stats(); hs.GapsUnmarked != 0 || hs.Sensors != 1 {
+		t.Fatalf("umidade: %+v", hs)
+	}
+}
+
+func TestManualCustomTopicFlag(t *testing.T) {
+	addr := freeAddr(t)
+	startBroker(t, addr, broker.Config{})
+	cons := startConsumerWith(t, consumer.Config{Addr: addr, Filters: []string{"estacao/norte/{id}"}})
+	_ = cons
+	m, err := sensor.NewManual(sensor.ManualConfig{
+		Addr: addr, SensorID: "demo", BufferPath: filepath.Join(t.TempDir(), "d.buf"),
+		Topic: "estacao/norte/" + sensor.TopicIDPlaceholder, PublishTimeout: time.Second, Reconnect: fastReconnect,
+	})
+	if err != nil {
+		t.Fatalf("NewManual: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	if got := m.State().Topic; got != "estacao/norte/demo" {
+		t.Fatalf("topico = %q", got)
+	}
+	if _, err := sensor.NewManual(sensor.ManualConfig{
+		Addr: addr, SensorID: "demo", BufferPath: filepath.Join(t.TempDir(), "x.buf"), Topic: "a/+/b",
+	}); err == nil {
+		t.Fatalf("topico com curinga aceito")
+	}
+}
+
 func TestManualRejectsBadCommands(t *testing.T) {
 	out := runManual(t, newManual(t, freeAddr(t), t.TempDir()), "voar\ndormir\ndormir xyz\nrajada -1\nsair\n")
 	expectContains(t, "saida", out,

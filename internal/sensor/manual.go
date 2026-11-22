@@ -23,6 +23,9 @@ type ManualConfig struct {
 	SensorID   string
 	BufferPath string
 	BufferSize int
+	// Topic é o tópico das leituras com buffer durável; "{id}" vira o id do
+	// sensor. Vazio usa sensores/<id>/temperatura.
+	Topic string
 	// PublishTimeout limita a espera pelo PUBACK de cada leitura.
 	PublishTimeout time.Duration
 	Reconnect      client.ReconnectOptions
@@ -43,6 +46,9 @@ type Manual struct {
 	buffer *storage.FileBuffer
 
 	opMu sync.Mutex
+	// extraSeq numera as leituras de "publicar" em outros tópicos, por
+	// sensor_id de fluxo. Só é acessado com opMu.
+	extraSeq map[string]uint64
 
 	stateMu sync.Mutex
 	client  *client.Client
@@ -76,7 +82,9 @@ const (
 )
 
 const manualHelp = `comandos:
-  <temperatura>         publica uma leitura (ex.: 23.5)
+  <temperatura>         publica uma leitura (ex.: 23.5) no topico do sensor
+  publicar <topico> <temp>  publica em outro topico (ex.: publicar sensores/sala-01/umidade 55),
+                        sem buffer durável; usa um fluxo proprio <id>.<ultimo nivel>
   rajada <n> [temp]     grava n leituras de uma vez e envia
   dormir <duracao>      envia SLEEP e desconecta (ex.: dormir 30s); a proxima leitura reconecta
   desconectar           derruba a conexao sem avisar (falha); as leituras ficam no buffer
@@ -100,6 +108,8 @@ func NewManual(cfg ManualConfig) (*Manual, error) {
 		return nil, fmt.Errorf("%w: id do sensor %q", ErrInvalidConfig, cfg.SensorID)
 	case cfg.BufferPath == "":
 		return nil, fmt.Errorf("%w: arquivo do buffer vazio", ErrInvalidConfig)
+	case cfg.Topic != "" && !ValidPublishTopic(strings.ReplaceAll(cfg.Topic, TopicIDPlaceholder, "x")):
+		return nil, fmt.Errorf("%w: topico %q (use niveis separados por /, sem + nem #)", ErrInvalidConfig, cfg.Topic)
 	}
 	if cfg.BufferSize <= 0 {
 		cfg.BufferSize = DefaultBufferSize
@@ -118,7 +128,7 @@ func NewManual(cfg ManualConfig) (*Manual, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manual{cfg: cfg, topic: "sensores/" + cfg.SensorID + "/temperatura", buffer: buffer}, nil
+	return &Manual{cfg: cfg, topic: TopicFor(cfg.Topic, cfg.SensorID), buffer: buffer, extraSeq: map[string]uint64{}}, nil
 }
 
 // Close desconecta e fecha o buffer.
@@ -207,6 +217,20 @@ func (m *Manual) Publish(ctx context.Context, temperature float32) (string, erro
 	defer m.end()
 	p, text := capture()
 	m.publish(ctx, p, temperature)
+	return text(), nil
+}
+
+// PublishTo publica uma leitura em outro tópico pela mesma conexão. Sem buffer
+// durável: a leitura só sai se houver conexão e PUBACK. O broker numera por
+// sensor_id, então a leitura usa um fluxo próprio (<id>.<último nível do
+// tópico>) com seq iniciado no relógio, para não colidir com o seq do buffer.
+func (m *Manual) PublishTo(ctx context.Context, topic string, temperature float32) (string, error) {
+	if !m.begin("publicando") {
+		return "", ErrBusy
+	}
+	defer m.end()
+	p, text := capture()
+	m.publishTo(ctx, p, topic, temperature)
 	return text(), nil
 }
 
@@ -304,6 +328,17 @@ func (m *Manual) handle(ctx context.Context, args []string) bool {
 		m.doConnect(ctx, p)
 	case "desconectar":
 		m.doDisconnect(p)
+	case "publicar":
+		if len(args) != 3 {
+			p("  uso: publicar <topico> <temperatura>, por exemplo: publicar sensores/%s/umidade 55\n", m.cfg.SensorID)
+			return true
+		}
+		temperature, err := ParseTemperature(args[2])
+		if err != nil {
+			p("  temperatura invalida %q\n", args[2])
+			return true
+		}
+		m.publishTo(ctx, p, args[1], temperature)
 	case "dormir":
 		if len(args) != 2 {
 			p("  uso: dormir <duracao>, por exemplo: dormir 30s\n")
@@ -445,6 +480,40 @@ func (m *Manual) publish(ctx context.Context, p printer, temperature float32) {
 	default:
 		p("  seq=%d %s\n", r.Seq, describeStatus(status))
 	}
+}
+
+func (m *Manual) publishTo(ctx context.Context, p printer, topic string, temperature float32) {
+	if !ValidPublishTopic(topic) {
+		p("  topico invalido %q: niveis separados por /, sem nivel vazio, sem + nem #\n", topic)
+		return
+	}
+	if topic == m.topic {
+		m.publish(ctx, p, temperature)
+		return
+	}
+	if m.client == nil && !m.offline {
+		m.connect(ctx, p)
+	}
+	if m.client == nil {
+		p("  sem conexao: leituras em outro topico nao usam o buffer; nada foi enviado\n")
+		return
+	}
+	levels := strings.Split(topic, "/")
+	stream := m.cfg.SensorID + "." + levels[len(levels)-1]
+	seq, ok := m.extraSeq[stream]
+	if !ok {
+		seq = uint64(time.Now().UnixMilli())
+	}
+	seq++
+	m.extraSeq[stream] = seq
+	pubCtx, cancel := context.WithTimeout(ctx, m.cfg.PublishTimeout)
+	defer cancel()
+	status, err := m.client.Publish(pubCtx, topic, client.Reading{SensorID: stream, Seq: seq, Temperature: temperature})
+	if err != nil {
+		p("  %s: sem PUBACK (%v); esta leitura nao tem buffer e foi perdida\n", topic, shortErr(err))
+		return
+	}
+	p("  %s (fluxo %s, seq=%d) %s\n", topic, stream, seq, describeStatus(status))
 }
 
 func describeStatus(s client.Status) string {

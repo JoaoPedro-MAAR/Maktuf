@@ -30,7 +30,8 @@ func main() {
 func run() error {
 	var cfg sensor.ManualConfig
 	flag.StringVar(&cfg.Addr, "addr", vip.DefaultAddr, "endereco do vip (ambiente completo); para um broker sozinho, o endereco dele, ex.: 127.0.0.1:7000")
-	flag.StringVar(&cfg.SensorID, "id", "sensor-manual", "id do sensor (topico sensores/<id>/temperatura)")
+	flag.StringVar(&cfg.SensorID, "id", "sensor-manual", "id do sensor")
+	flag.StringVar(&cfg.Topic, "topico", "", "topico das leituras com buffer; {id} vira o id do sensor (padrao sensores/{id}/temperatura); varios sensores podem usar o mesmo topico")
 	dataDir := flag.String("data-dir", filepath.Join("data", "sensor-manual"), "diretorio do buffer persistente")
 	flag.IntVar(&cfg.BufferSize, "buffer-size", sensor.DefaultBufferSize, "maximo de leituras pendentes no buffer")
 	flag.DurationVar(&cfg.PublishTimeout, "publish-timeout", sensor.DefaultPublishTimeout, "espera maxima pelo PUBACK")

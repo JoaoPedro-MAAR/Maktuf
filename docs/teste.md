@@ -138,7 +138,7 @@ kill -9 $(pgrep -f "id b1")
 - **T7:** digite `26` logo depois do kill. Pode aparecer "sem PUBACK por
   enquanto; fica no buffer". Repita depois de alguns segundos: `PERSISTED`.
 - **T6:** o consumidor **nunca foi reiniciado** e continua recebendo, sem
-  lacuna. Uma leitura pode aparecer como "repetida (descartada pela
+  lacuna. Uma leitura pode aparecer como "REPETIDA (descartada pela
   deduplicação)", o que é o "pelo menos uma vez" funcionando.
 
 **Ponto:** nenhum cliente sabe que o broker mudou. A leitura confirmada antes

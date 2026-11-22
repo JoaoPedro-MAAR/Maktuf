@@ -108,6 +108,25 @@ Para recomeçar do zero, pare tudo e apague `data/`.
 Cuidado ao usar `pkill -f "id b1"` dentro de um script: o padrão pode casar
 com a linha de comando do próprio script.
 
+## 4.0 Tópico dos sensores
+
+O tópico padrão de um sensor é `sensores/<id>/temperatura`. Com `-topico` (no
+`sensor` e no `sensor-manual`) ele pode ser outro; `{id}` vira o id do
+sensor, e sem `{id}` **todos os sensores publicam no mesmo tópico**, cada um
+com o próprio `sensor_id` e `seq`:
+
+```bash
+bin/sensor -count 3 -topico estacao/comum                     # 3 sensores, 1 tópico
+bin/sensor-manual -id a -topico estacao/{id}/leitura          # estacao/a/leitura
+bin/consumidor -filters estacao/comum                         # quem recebe
+```
+
+No `sensor-manual`, `publicar <topico> <temperatura>` publica **em outro
+tópico pela mesma conexão**, sem buffer durável e num fluxo próprio
+(`<id>.<último nível>`), porque o broker numera por `sensor_id`
+(ver [ressalvas](ressalvas.md)). O consumidor precisa assinar o tópico novo:
+os filtros padrão só cobrem `sensores/+/temperatura` e `sensores/+/status`.
+
 ## 4.1 Painel web (aplicação de exemplo)
 
 Com o ambiente da seção 3 no ar (Juiz, b1, b2 e vip, com `-metrics-addr`):
