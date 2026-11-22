@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 
@@ -113,8 +114,8 @@ func TestSubscriberQueueTrimsRestoredQueueAboveLimit(t *testing.T) {
 	}
 }
 
-// Round-robin: um sensor com vários jobs não impede que o outro avance.
-func TestSchedulerRoundRobin(t *testing.T) {
+// Com todos os sensores com backlog, cada um tem a mesma fatia.
+func TestSchedulerEqualShareWhenBacklogged(t *testing.T) {
 	var mu sync.Mutex
 	var order []string
 	s := newScheduler(func(m *protocol.Publish) (PublishResult, error) {
@@ -159,6 +160,96 @@ func TestSchedulerRoundRobin(t *testing.T) {
 	for i := range want {
 		if order[i] != want[i] {
 			t.Fatalf("ordem = %v, esperado %v", order, want)
+		}
+	}
+}
+
+// schedulerOrder enfileira os jobs com o processamento do primeiro bloqueado e
+// devolve a ordem de processamento. steps roda com o primeiro job em curso.
+func schedulerOrder(t *testing.T, total int, steps func(s *scheduler, started <-chan struct{}, enq func(q *sensorQueue, id string, seq uint64))) []string {
+	t.Helper()
+	var mu sync.Mutex
+	var order []string
+	gate := make(chan struct{})
+	started := make(chan struct{})
+	s := newScheduler(func(m *protocol.Publish) (PublishResult, error) {
+		mu.Lock()
+		first := len(order) == 0
+		order = append(order, m.SensorID)
+		mu.Unlock()
+		if first {
+			close(started)
+			<-gate
+		}
+		return PublishResult{Status: protocol.StatusPersisted}, nil
+	})
+	s.start()
+	t.Cleanup(s.close)
+
+	dones := make(chan chan publishOutcome, total)
+	enq := func(q *sensorQueue, id string, seq uint64) {
+		job := &publishJob{msg: &protocol.Publish{SensorID: id, Seq: seq}, done: make(chan publishOutcome, 1)}
+		dones <- job.done
+		s.enqueue(q, job)
+	}
+	steps(s, started, enq)
+	close(gate)
+	for i := 0; i < total; i++ {
+		<-<-dones
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return order
+}
+
+// Um sensor leve espera só o job em andamento, não o backlog do intenso.
+func TestSchedulerLightSensorGoesFirst(t *testing.T) {
+	a := &sensorQueue{clientID: "a", slots: make(chan struct{}, 10)}
+	b := &sensorQueue{clientID: "b", slots: make(chan struct{}, 10)}
+	order := schedulerOrder(t, 6, func(s *scheduler, started <-chan struct{}, enq func(*sensorQueue, string, uint64)) {
+		s.register(a)
+		s.register(b)
+		for i := uint64(1); i <= 5; i++ {
+			enq(a, "a", i)
+		}
+		<-started
+		enq(b, "b", 1)
+	})
+	want := []string{"a", "b", "a", "a", "a", "a"}
+	if fmt.Sprint(order) != fmt.Sprint(want) {
+		t.Fatalf("ordem = %v, esperado %v", order, want)
+	}
+}
+
+// Ociosidade não acumula crédito: depois de 50 jobs só de a, b não despeja
+// os seus seguidos na frente de a.
+func TestSchedulerNoCreditAfterIdle(t *testing.T) {
+	a := &sensorQueue{clientID: "a", slots: make(chan struct{}, 100)}
+	b := &sensorQueue{clientID: "b", slots: make(chan struct{}, 100)}
+	order := schedulerOrder(t, 62, func(s *scheduler, started <-chan struct{}, enq func(*sensorQueue, string, uint64)) {
+		s.register(a)
+		s.register(b)
+		for i := uint64(1); i <= 50; i++ {
+			enq(a, "a", i)
+		}
+		<-started
+		for i := uint64(1); i <= 6; i++ {
+			enq(a, "a", 50+i)
+			enq(b, "b", i)
+		}
+	})
+	// Dos 6 jobs de cada um depois do job inicial, b não pode ter 3 seguidos
+	// antes de a voltar a ser atendido.
+	tail := order[len(order)-12:]
+	run := 0
+	for _, id := range tail {
+		if id == "b" {
+			run++
+		} else {
+			run = 0
+		}
+		if run > 1 {
+			t.Fatalf("b recebeu crédito por ociosidade: %v", order)
 		}
 	}
 }

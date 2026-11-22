@@ -262,7 +262,7 @@ precisar subir.
 
 A biblioteca envia um `PUBLISH` por vez e espera o `PUBACK` antes do próximo.
 Um sensor que a usa, mesmo medindo a cada 1 ms, nunca tem mais de uma leitura
-em voo: o excesso fica no buffer dele. O escalonamento round-robin do broker e
+em voo: o excesso fica no buffer dele. O escalonamento por fila justa do broker (DP-18) e
 o limite de fila por sensor (RF-34, RF-38) protegem contra clientes que **não**
 seguem esse ritmo; isso é coberto nos testes do broker
 (`internal/broker/backpressure_test.go`). O cenário `justica` mede o efeito de

@@ -190,7 +190,7 @@ quiser, rode um cenário curto ao vivo (~20 s):
 go run ./examples/runner -cenario examples/cenarios/ci/queda_primario.json
 ```
 
-Seja transparente sobre as duas metas não atingidas (RNF-01 p95 e RNF-05):
+Seja transparente sobre o limite de vazão (a margem do RNF-01 é pequena):
 o sistema fica perto do limite de vazão, porque cada leitura passa por fsync
 no sensor, no primário e na reserva. A causa técnica está em
 [ressalvas.md](ressalvas.md), seção "Vazão limitada pela gravação síncrona
