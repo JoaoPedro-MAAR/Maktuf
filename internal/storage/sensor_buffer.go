@@ -64,8 +64,8 @@ var (
 )
 
 type BufferOptions struct {
-	// MaxReadings é a quantidade máxima de leituras pendentes. Obrigatório:
-	// o limite padrão ainda é ponto em aberto (requisitos.md, 11.1 item 5).
+	// MaxReadings é a quantidade máxima de leituras pendentes. Obrigatório;
+	// as aplicações de exemplo usam 86.400 (requisitos.md, 11.1 item 5).
 	MaxReadings int
 	// SensorID identifica o sensor nos logs.
 	SensorID string

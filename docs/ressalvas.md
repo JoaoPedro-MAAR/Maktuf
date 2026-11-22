@@ -250,13 +250,35 @@ Cada leitura custa, em sequência:
 2. fsync no store do primário;
 3. ida e volta e fsync na reserva (`REPLICA_ACK`);
 4. depois da entrega, um registro de `DELIVER_ACK` que passa pelo mesmo
-   caminho.
+   caminho, **sem fsync** (ver "O cursor de entrega é gravado sem fsync").
 
 Todas as gravações do store passam por um único lock, que preserva a ordem
 replicada. A vazão total do broker fica, portanto, presa ao tempo de fsync do
-disco. Os cenários de `examples/` medem esse teto; os números estão na task 017.
-Envio em lote e um fsync por grupo de registros são as alavancas, se o teto
-precisar subir.
+disco: ~10 ms por fsync na máquina dos testes (WSL2). Com o `DELIVER_ACK` também
+com fsync, eram 4 fsyncs por leitura e o teto ficava em ~22 leituras/s, no
+limite do perfil de referência (20,6/s). Os números estão em
+[relatorio-final.md](relatorio-final.md). Envio em lote e um fsync por grupo de
+registros (group commit) são a próxima alavanca, se o teto precisar subir.
+
+## O cursor de entrega é gravado sem fsync (Etapa 3)
+
+O registro do `DELIVER_ACK` vai para o store e para a reserva sem fsync (DP-04).
+Ele fica no cache do sistema operacional e chega ao disco no próximo fsync do
+store, que grava tudo o que veio antes no arquivo.
+
+- **Queda do processo (`kill -9`) ou failover:** nada muda. O cache do SO
+  sobrevive e a reserva também recebeu o registro.
+- **Queda da máquina:** os últimos cursores podem se perder. O broker volta com
+  a leitura ainda na fila do assinante e a entrega de novo; a biblioteca
+  descarta a repetida por `sensor_id + seq`. É duplicata, não perda: a
+  garantia "pelo menos uma vez" e o RPO = 0 das leituras confirmadas com
+  `PUBACK` continuam valendo.
+- **Cauda do store:** por isso uma queda da máquina pode deixar vários
+  registros incompletos ou zerados no fim do arquivo. O store abre o log com
+  `storage.WithUnsyncedTail`, que descarta tudo a partir do primeiro registro
+  inválido. Como todo fsync grava o que veio antes, esse trecho só contém
+  cursores. Em troca, uma corrupção física no meio do arquivo também passa a
+  truncar o store ali, em vez de impedir o broker de subir.
 
 ## A biblioteca cliente limita a "agressividade" de um sensor
 

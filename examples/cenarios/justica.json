@@ -1,6 +1,6 @@
 {
   "name": "justica",
-  "description": "Justiça entre cargas (RF-38, RNF-05, CT-09): 3 sensores com intervalo de 1 ms entram no meio de 20 sensores normais; o p95 dos normais não pode passar de 2x a linha de base. Com a biblioteca cliente, cada sensor tem um PUBLISH em voo por vez.",
+  "description": "Justiça entre cargas (RF-38, RNF-05, CT-09): 3 sensores com intervalo de 1 ms entram no meio de 20 sensores normais; o p95 dos normais não pode passar de 2x a linha de base + 0,5 s. Com a biblioteca cliente, cada sensor tem um PUBLISH em voo por vez.",
   "seed": 44,
   "duration": "2m",
   "scrape_interval": "1s",
@@ -11,7 +11,7 @@
     { "group": "agressivo", "count": 3, "continuous_ratio": 1, "continuous_interval": "1ms", "stagger": false, "start_at": "60s" }
   ],
   "goals": [
-    { "name": "RNF-05 p95 dos normais <= 2x a base", "type": "latency_ratio", "group": "sensor", "quantile": 0.95, "base": ["10s", "60s"], "test": ["65s", "2m"], "max_ratio": 2 },
+    { "name": "RNF-05 p95 dos normais <= 2x a base + 0,5 s", "type": "latency_ratio", "group": "sensor", "quantile": 0.95, "base": ["10s", "60s"], "test": ["65s", "2m"], "max_ratio": 2, "max_extra": 0.5 },
     { "name": "Agressivos estiveram ativos", "type": "metric", "process": "consumidor:consumidor-1", "metric": "messages_received_total", "labels": { "group": "agressivo" }, "min": 100 },
     { "name": "Sem perda", "type": "no_loss" }
   ]

@@ -28,8 +28,10 @@ const (
 	logRecordOverhead = 4 + 4
 )
 
-// RecordLog é um WAL genérico com fsync a cada gravação. O conteúdo dos
-// registros é opaco para o storage. Pode ser usado por várias goroutines.
+// RecordLog é um WAL genérico com fsync a cada gravação (Append). Com
+// AppendBuffered, o registro é gravado sem fsync e só chega ao disco no próximo
+// fsync do arquivo. O conteúdo dos registros é opaco para o storage. Pode ser
+// usado por várias goroutines.
 type RecordLog struct {
 	path    string
 	header  []byte
@@ -37,15 +39,35 @@ type RecordLog struct {
 	file    *os.File
 	records int
 	err     error
+	// unsynced indica gravações sem fsync desde o último fsync.
+	unsynced bool
+	// tolerant trata qualquer registro inválido como o fim do log (ver
+	// WithUnsyncedTail).
+	tolerant bool
+}
+
+// Option ajusta a abertura de um RecordLog.
+type Option func(*RecordLog)
+
+// WithUnsyncedTail serve a logs que usam AppendBuffered. Uma queda da máquina
+// pode deixar vários registros não sincronizados incompletos ou zerados no fim
+// do arquivo. Como cada fsync grava tudo o que veio antes, um registro inválido
+// só pode estar nessa cauda: a abertura descarta o arquivo a partir do primeiro
+// registro inválido (incluindo os de tamanho zero), em vez de acusar corrupção.
+func WithUnsyncedTail() Option {
+	return func(l *RecordLog) { l.tolerant = true }
 }
 
 // OpenRecordLog abre (ou cria) o log em path e devolve os registros válidos,
 // na ordem em que foram gravados. magic deve ter 4 bytes.
-func OpenRecordLog(path, magic string, version byte) (*RecordLog, [][]byte, error) {
+func OpenRecordLog(path, magic string, version byte, opts ...Option) (*RecordLog, [][]byte, error) {
 	if len(magic) != logMagicSize {
 		return nil, nil, fmt.Errorf("%w: magic deve ter %d bytes", ErrInvalidConfig, logMagicSize)
 	}
 	l := &RecordLog{path: path, header: append([]byte(magic), version)}
+	for _, opt := range opts {
+		opt(l)
+	}
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -97,12 +119,12 @@ func (l *RecordLog) parse(data []byte) ([][]byte, int, error) {
 		n := int(binary.BigEndian.Uint32(rest[0:4]))
 		sum := binary.BigEndian.Uint32(rest[4:8])
 		end := logRecordOverhead + n
-		if n > len(rest)-logRecordOverhead {
+		if n > len(rest)-logRecordOverhead || (l.tolerant && n == 0) {
 			break
 		}
 		body := rest[logRecordOverhead:end]
 		if crc32.ChecksumIEEE(body) != sum {
-			if end == len(rest) {
+			if l.tolerant || end == len(rest) {
 				break
 			}
 			return nil, 0, fmt.Errorf("%w: registro invalido no byte %d", ErrCorrupted, off)
@@ -134,21 +156,41 @@ func frame(buf, rec []byte) []byte {
 	return append(buf, rec...)
 }
 
-// Append grava o registro e força o fsync antes de retornar. Depois de uma
-// falha de escrita o estado do arquivo é incerto, então o log passa a recusar
-// operações.
+// Append grava o registro e força o fsync antes de retornar; o fsync também
+// leva ao disco os registros anteriores gravados com AppendBuffered. Depois de
+// uma falha de escrita o estado do arquivo é incerto, então o log passa a
+// recusar operações.
 func (l *RecordLog) Append(rec []byte) error {
+	return l.append(rec, true)
+}
+
+// AppendBuffered grava o registro sem fsync. Ele sobrevive à queda do
+// processo (fica no cache do SO), mas pode se perder numa
+// queda da máquina até o próximo Append, Rewrite ou Close. Use com
+// WithUnsyncedTail.
+func (l *RecordLog) AppendBuffered(rec []byte) error {
+	return l.append(rec, false)
+}
+
+func (l *RecordLog) append(rec []byte, sync bool) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.err != nil {
 		return l.err
 	}
+	if l.tolerant && len(rec) == 0 {
+		// Com WithUnsyncedTail, tamanho zero marca cauda zerada na abertura.
+		return fmt.Errorf("%w: registro vazio", ErrInvalidConfig)
+	}
 	if _, err := l.file.Write(frame(nil, rec)); err != nil {
 		return l.fail("gravar log", err)
 	}
-	if err := l.file.Sync(); err != nil {
-		return l.fail("fsync do log", err)
+	if sync {
+		if err := l.file.Sync(); err != nil {
+			return l.fail("fsync do log", err)
+		}
 	}
+	l.unsynced = !sync
 	l.records++
 	return nil
 }
@@ -184,6 +226,7 @@ func (l *RecordLog) Rewrite(recs [][]byte) error {
 	}
 	l.file = f
 	l.records = len(recs)
+	l.unsynced = false
 	return nil
 }
 
@@ -202,6 +245,13 @@ func (l *RecordLog) Close() error {
 	}
 	if l.file == nil {
 		return nil
+	}
+	if l.unsynced {
+		if err := l.file.Sync(); err != nil {
+			_ = l.file.Close()
+			l.file = nil
+			return fmt.Errorf("storage: fsync ao fechar: %w", err)
+		}
 	}
 	err := l.file.Close()
 	l.file = nil

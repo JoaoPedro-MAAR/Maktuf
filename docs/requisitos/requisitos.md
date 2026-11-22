@@ -226,7 +226,7 @@ A prioridade segue a escala:
 | RNF-02 | Latência durante recuperação de sensor offline | Atraso de recuperação aceitável; não conta para a meta de latência online. |
 | RNF-03 | Vazão do perfil de referência | Suportar pelo menos 200 sensores, sendo 90% de baixa taxa (1 leitura a cada 5 min) e 10% de taxa contínua (1 leitura/s), com rajadas de até 10x. |
 | RNF-04 | Rajadas | Absorver rajada de 2.000 mensagens sem recusar novas conexões e sem perda de mensagens confirmadas. |
-| RNF-05 | Justiça | A latência p95 de um sensor bem-comportado não pode ultrapassar 2x a linha de base quando outro sensor estiver saturado. |
+| RNF-05 | Justiça | A latência p95 de um sensor bem-comportado não pode ultrapassar 2x a linha de base + 0,5 s quando outro sensor estiver saturado. A folga absoluta (revisão da Etapa 3) evita que uma base muito baixa, de dezenas de ms, torne o critério mais rígido do que a latência relaxada do cenário (RNF-01: 5 s). |
 | RNF-06 | Failover | RTO ≤ 30 s para o broker reserva assumir e clientes reconectarem. |
 | RNF-07 | Perda de dados | RPO = 0 para leituras confirmadas com ACK. |
 | RNF-08 | Disponibilidade | Alvo de 99,9% de disponibilidade do serviço durante os testes, desconsiderando falhas programadas. |
@@ -431,7 +431,7 @@ As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
 | DP-01 | Criação de tópico | O tópico é criado na primeira inscrição e removido quando o último inscrito cancela. | Alinha o ciclo de vida dinâmico com a regra de descarte quando não há inscritos. |
 | DP-02 | Publicação sem inscritos | A mensagem é descartada e o publicador recebe `NO_SUBSCRIBERS`. | Atende ao requisito mínimo e evita retenção indefinida. |
 | DP-03 | Sem replay histórico | Novos inscritos recebem apenas mensagens futuras. | Simplifica o modelo e evita armazenamento de histórico não previsto no cenário. |
-| DP-04 | ACK de leitura | O ACK significa persistência no primário e, enquanto a reserva estiver sincronizada, replicação na reserva. Com a reserva indisponível, o primário confirma só com o próprio disco (modo degradado). | Garante RPO zero para leituras confirmadas com a reserva sincronizada, sem tornar a reserva um segundo ponto de falha. |
+| DP-04 | ACK de leitura | O ACK significa persistência no primário e, enquanto a reserva estiver sincronizada, replicação na reserva. Com a reserva indisponível, o primário confirma só com o próprio disco (modo degradado). O registro do `DELIVER_ACK` (cursor de entrega) é gravado e replicado sem fsync: numa queda da máquina, ele pode se perder e a leitura é reentregue como duplicata. | Garante RPO zero para leituras confirmadas com a reserva sincronizada, sem tornar a reserva um segundo ponto de falha. Tirar o fsync do cursor reduz de 4 para 2 fsyncs por leitura e dobra o teto de vazão (Etapa 3); perder um cursor só gera duplicata, nunca perda. |
 | DP-05 | Exclusão após entrega | A cópia original é removida após o enfileiramento para todos os inscritos; cada fila mantém sua própria retenção. | Permite apagar a mensagem sem perder entregas pendentes de consumidores lentos. |
 | DP-06 | Backpressure | Ao encher a fila de um sensor, o broker para de confirmar aquele sensor; os demais não são afetados. | Preserva confiabilidade e justiça. |
 | DP-07 | Consumidor lento | Cada assinante tem fila limitada; ao exceder a retenção, a lacuna é explicitada. | Evita perda silenciosa e bloqueio global. |
@@ -469,6 +469,22 @@ As decisões abaixo foram adotadas para eliminar ambiguidades do documento base.
    **Resolvido:** sim. É criado por inscrição, removido sem inscritos e não faz
    replay; transição sem inscritos é descartada.
 5. Qual é o limite máximo de tamanho de mensagem e de buffer por sensor?
+   **Resolvido (Etapa 3):**
+   - **Mensagem: 1 MiB por quadro** (`MaxMessageSize`, já no protocolo). Uma
+     leitura tem ~35 a 100 bytes, e mesmo um `PUBLISH` com tópico e
+     `sensor_id` no tamanho máximo (strings de até 64 KiB) fica em ~128 KiB.
+     A folga atende a replicação, cujo registro de leitura leva a lista de
+     inscritos. O limite é verificado antes de alocar memória, então um
+     cliente defeituoso não derruba o broker.
+   - **Buffer do sensor: 86.400 leituras por padrão** (configurável por
+     `-buffer-size`). São 24 h de um sensor contínuo (1 leitura/s) sem
+     conexão, ou ~300 dias de um sensor de baixa taxa, o que cobre os
+     sensores que "ficam horas offline" do cenário. Ocupa ~2,5 MB (~30 bytes
+     por leitura). Ao encher, o buffer descarta a leitura mais antiga e o
+     consumidor vê a lacuna (RF-26). Esvaziar um buffer cheio leva ~35 a
+     40 min, porque o sensor envia uma leitura por vez; o RNF-02 aceita esse
+     atraso de recuperação, e a fila justa (DP-18) impede que ele afete os
+     outros sensores.
 6. O Juiz deve ser replicado para eliminar o ponto único de falha na coordenação?
    **Resolvido:** não nesta versão. Há 1 Juiz (DP-12); ele é ponto único de
    falha da coordenação, não dos dados: sem o Juiz os brokers seguem

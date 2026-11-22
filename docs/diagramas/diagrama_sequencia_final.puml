@@ -1,0 +1,126 @@
+@startuml diagrama_sequencia_final
+title Maktuf - fluxos principais (versão final, protocolo versão 3)
+
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+skinparam noteBackgroundColor #FEFDE7
+skinparam sequenceGroupBodyBackgroundColor #FAFAFA
+
+participant "Sensor A\n(biblioteca)" as A
+participant "vip\n(proxy TCP)" as V
+box "Broker replicado" #F5F5F5
+participant "Broker\nprimário" as BR
+participant "Broker\nreserva" as RS
+participant "Juiz" as J
+end box
+participant "Consumidor\n(biblioteca)" as C
+
+== Cenário 1: operação normal ==
+
+note over A, C : Todos os clientes conhecem só o endereço do vip, que repassa a conexão ao\nbroker que aceita o CONNECT. As mensagens entre cliente e broker passam pelo vip\n(omitido nas setas a partir daqui). Handshake e ACKs do TCP omitidos.
+
+loop a cada intervalo de heartbeat
+  BR -> J : HEARTBEAT(estado = primário, last_seq)
+  J --> BR : eco
+  RS -> J : HEARTBEAT(estado = reserva sincronizada, índice)
+  J --> RS : eco
+end
+note right of J : O Juiz não recebe leituras:\nsó monitora os brokers e\ndecide promoções
+
+C -> V : CONNECT(consumidor_id)
+V -> BR : CONNECT(consumidor_id)
+BR --> C : CONNACK(OK)
+C -> BR : SUBSCRIBE(sensores/+/temperatura)
+BR -> RS : REPLICA(registro de inscrição)
+RS --> BR : REPLICA_ACK
+BR --> C : SUBACK
+
+A -> BR : CONNECT(sensor_id)
+BR --> A : CONNACK(OK)
+BR -> C : DELIVER(sensores/A/status = online)
+
+A -> A : Grava a leitura no buffer\n(fsync) com seq crescente
+A -> BR : PUBLISH(tópico, sensor_id, seq, age_ms, temperatura)
+activate BR
+BR -> BR : Fila do sensor + fila justa;\ngrava no store (fsync)\ninstante = agora - age_ms
+BR -> RS : REPLICA(registro da leitura)
+RS -> RS : Grava (fsync)
+RS --> BR : REPLICA_ACK
+BR --> A : PUBACK(PERSISTED, seq)
+note left of A : Só agora a leitura\nsai do buffer
+BR -> C : DELIVER(tópico, sensor_id, seq, instante, temperatura)
+C -> C : Descarta se repetida\n(sensor_id + seq)
+C --> BR : DELIVER_ACK(seq)
+BR -> BR : Avança o cursor\n(gravado sem fsync)
+BR -> RS : REPLICA(registro do cursor)
+RS --> BR : REPLICA_ACK
+deactivate BR
+
+note over BR, C : Sem inscritos, o broker responde PUBACK(NO_SUBSCRIBERS) e descarta a leitura.\nCom a fila do assinante cheia, descarta a mais antiga depois da cabeça e marca\na próxima leitura do sensor com GAP_BEFORE.
+
+== Cenário 2: sensor dorme para economizar energia ==
+
+A -> BR : SLEEP(duração = X s)
+BR -> BR : Marca Sensor A como DORMINDO\n(prazo = X + tolerância)
+BR -> C : DELIVER(sensores/A/status = dormindo)
+
+... enquanto dorme, as leituras ficam no buffer persistente ...
+
+alt Sensor acorda dentro do prazo
+  A -> BR : CONNECT(sensor_id)
+  BR --> A : CONNACK(OK)
+  BR -> C : DELIVER(sensores/A/status = online)
+  loop leituras acumuladas, da mais antiga para a mais nova
+    A -> BR : PUBLISH(..., seq, age_ms, ...)
+    BR -> RS : REPLICA / REPLICA_ACK
+    BR --> A : PUBACK(PERSISTED, seq)
+    BR -> C : DELIVER(...)
+    C --> BR : DELIVER_ACK(seq)
+  end
+else Prazo esgotado sem contato
+  BR -> BR : Marca Sensor A como OFFLINE
+  BR -> C : DELIVER(sensores/A/status = offline)
+  note right of BR : Quando o sensor voltar,\npublica online e envia\no buffer em ordem
+end
+
+== Cenário 3: falha do broker primário ==
+
+note over BR #FFDDDD : Broker primário cai (kill -9)
+
+A ->x BR : PUBLISH(..., seq, ...)
+note left of A : Conexão caiu sem PUBACK:\na leitura continua no buffer.\nA biblioteca reconecta com\nbackoff pelo vip
+
+A -> V : CONNECT(sensor_id)
+V ->x BR : CONNECT (primário fora)
+V -> RS : CONNECT(sensor_id)
+RS --> V : CONNACK(TEMPORARY_FAILURE)
+V --> A : CONNACK(TEMPORARY_FAILURE)
+note right of RS : A reserva recusa clientes\naté ser promovida; nenhum\nbroker aceitou, e o sensor\ntenta de novo com backoff
+
+J -> J : Sem HEARTBEAT do primário\ndentro do prazo de falha
+J -> J : Reserva sincronizada e com\níndice ≥ ao último do primário?
+J -> RS : PROMOTE
+activate RS
+RS -> RS : Monta tópicos, filas e cursores\na partir do store replicado
+
+A -> V : CONNECT(sensor_id)
+V -> RS : CONNECT(sensor_id)
+RS --> A : CONNACK(OK)
+A -> RS : PUBLISH(..., seq, ...)
+note left of A : Reenvia as leituras sem\nPUBACK; um reenvio já\ngravado é confirmado\nsem duplicar
+RS --> A : PUBACK(PERSISTED, seq)
+
+C -> RS : CONNECT(consumidor_id)
+RS --> C : CONNACK(OK)
+C -> RS : SUBSCRIBE(sensores/+/temperatura)
+note right of C : A biblioteca refaz as\ninscrições ao reconectar
+RS --> C : SUBACK
+RS -> C : DELIVER(..., seq, ...)
+note right of RS : Retoma do cursor replicado
+C -> C : Descarta se repetida\n(sensor_id + seq)
+C --> RS : DELIVER_ACK(seq)
+deactivate RS
+
+note over A, C : As aplicações do sensor e do consumidor não percebem a troca de broker (RPO = 0).\nQuando o antigo primário volta, o Juiz o mantém como reserva: ele descarta o estado\nlocal e recebe a sincronização completa da nova primária.
+
+@enduml

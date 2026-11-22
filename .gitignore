@@ -2,3 +2,5 @@
 *.test
 coverage.out
 /data/
+/.venv/
+__pycache__/

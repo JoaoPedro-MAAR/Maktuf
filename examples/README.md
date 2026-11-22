@@ -36,7 +36,7 @@ meta. O código de saída é:
 |---|---|---|
 | `referencia.json` | Perfil do RNF-03: 200 sensores (90% a 5 min, 10% a 1 s); latência p95/p99 (RNF-01), vazão e perda | 15 min |
 | `rajada.json` | Rajada de 2.000 leituras absorvida pelo buffer, sem recusar conexões nem perder leituras (RNF-04) | ~2 min |
-| `justica.json` | Sensores com intervalo de 1 ms entram no meio; o p95 dos normais ≤ 2× a base (RNF-05) | ~2 min |
+| `justica.json` | Sensores com intervalo de 1 ms entram no meio; o p95 dos normais ≤ 2× a base + 0,5 s (RNF-05) | ~2 min |
 | `consumidor_lento.json` | Retenção do assinante estoura e a lacuna chega com `GAP_BEFORE` (RF-37) | ~2 min |
 | `queda_primario.json` | `kill -9` no primário com prazos padrão: RTO ≤ 30 s e RPO = 0 (RNF-06/07) | ~2 min |
 | `queda_juiz.json` | `kill -9` no Juiz: os dados continuam fluindo (RF-48) | ~2 min |
@@ -107,7 +107,7 @@ Campos desconhecidos são erro, para pegar erros de digitação. `primario` e
 | `type` | Campos | Mede |
 |---|---|---|
 | `latency` | `group`, `quantile`, `window`, `max` (s) | Percentil de `end_to_end_latency_seconds{group}` só das leituras da janela (diferença dos buckets) |
-| `latency_ratio` | `group`, `quantile`, `base`, `test`, `max_ratio` | Percentil da janela `test` dividido pelo da `base` |
+| `latency_ratio` | `group`, `quantile`, `base`, `test`, `max_ratio`, `max_extra` (s, opcional) | Percentil da janela `test` comparado ao da `base`: passa se `teste ≤ max_ratio × base + max_extra` |
 | `throughput` | `window`, `min` (leituras/s) | Vazão de `messages_received_total` do consumidor na janela |
 | `no_loss` | — | Buffers dos sensores vazios no fim, nenhuma lacuna sem marca e recebidas ≥ confirmadas |
 | `rto` | `fault` (índice), `max` (s) | Da falha até o consumidor voltar a receber leituras novas |

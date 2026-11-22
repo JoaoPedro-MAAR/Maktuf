@@ -36,7 +36,7 @@ func run() error {
 	flag.StringVar(&cfg.Topic, "topico", "", "topico de publicacao; {id} vira o id do sensor (padrao sensores/{id}/temperatura); sem {id}, todos os sensores publicam no mesmo topico")
 	flag.StringVar(&cfg.IDPrefix, "id-prefix", sensor.DefaultIDPrefix, "prefixo dos ids dos sensores (<prefixo>-001, ...)")
 	flag.StringVar(&cfg.DataDir, "data-dir", "data/sensores", "diretorio dos buffers persistentes (um arquivo por sensor)")
-	flag.IntVar(&cfg.BufferSize, "buffer-size", sensor.DefaultBufferSize, "maximo de leituras pendentes por sensor (provisorio, requisitos 11.1 item 5)")
+	flag.IntVar(&cfg.BufferSize, "buffer-size", sensor.DefaultBufferSize, "maximo de leituras pendentes por sensor (padrao: 24 h de sensor continuo)")
 	flag.Float64Var(&cfg.ContinuousRatio, "continuous-ratio", sensor.DefaultContinuousRatio, "fracao de sensores com perfil continuo")
 	flag.DurationVar(&cfg.LowInterval, "low-interval", sensor.DefaultLowInterval, "intervalo de medicao do perfil baixo")
 	flag.DurationVar(&cfg.ContinuousInterval, "continuous-interval", sensor.DefaultContinuousInterval, "intervalo de medicao do perfil continuo")

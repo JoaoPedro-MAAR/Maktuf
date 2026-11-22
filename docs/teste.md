@@ -190,13 +190,13 @@ quiser, rode um cenário curto ao vivo (~20 s):
 go run ./examples/runner -cenario examples/cenarios/ci/queda_primario.json
 ```
 
-Seja transparente sobre o limite de vazão (a margem do RNF-01 é pequena):
-o sistema fica perto do limite de vazão, porque cada leitura passa por fsync
-no sensor, no primário e na reserva. A causa técnica está em
+Seja transparente sobre o limite de vazão: cada leitura passa por fsync no
+sensor, no primário e na reserva, e o teto com réplica é de ~43 leituras/s
+(~2× o perfil de referência). Antes do ajuste da Etapa 3 (`DELIVER_ACK` sem
+fsync) o teto era ~22/s e o RNF-01 falhava. Os números e gráficos estão em
+[relatorio-final.md](relatorio-final.md); a causa técnica, em
 [ressalvas.md](ressalvas.md), seção "Vazão limitada pela gravação síncrona
-replicada"; as melhorias possíveis (gravar e replicar em lote, um fsync por
-grupo, `DELIVER_ACK` sem replicação síncrona), no fim dos resultados da
-[task 017](tasks/017-gerador-carga-falhas.md).
+replicada".
 
 ## Se algo der errado
 

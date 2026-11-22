@@ -233,6 +233,12 @@ Regras do `DELIVER`:
 Um `DELIVER_ACK` que não corresponde à leitura pendente (duplicado ou
 desconhecido) é ignorado e não encerra a sessão.
 
+O broker registra o `DELIVER_ACK` aceito no store (avanço do cursor) e o
+replica na reserva, mas **sem fsync**, nos dois brokers (DP-04). O registro
+sobrevive à queda do processo e chega ao disco no próximo fsync do store. Numa
+queda da máquina ele pode se perder: o broker reentrega a leitura, e o
+consumidor a descarta como repetida por `sensor_id + seq` (DP-09).
+
 ### SLEEP
 
 | Campo | Tipo |
@@ -374,7 +380,8 @@ SYNC_START(i) → RECORD(i, r1) → … → RECORD(i, rn) → SYNC_END(i)
 Com a reserva sincronizada, cada registro gravado no store do primário é
 replicado na mesma ordem, um de cada vez:
 
-1. o primário grava o registro no próprio disco (fsync);
+1. o primário grava o registro no próprio disco (fsync; o registro de
+   `DELIVER_ACK` é gravado sem fsync, e a reserva faz o mesmo ao aplicá-lo);
 2. envia `RECORD(index, registro)` e espera `REPLICA_ACK(RECORD, index)`;
 3. só então conclui a operação e responde ao cliente (`PUBACK(PERSISTED)`,
    `SUBACK` ou `UNSUBACK`) ou enfileira a leitura para os inscritos.
