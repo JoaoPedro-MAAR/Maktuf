@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/client"
@@ -40,7 +41,10 @@ type Config struct {
 	// ProcessDelay simula um consumidor lento: espera por mensagem antes de
 	// confirmar a próxima (RF-36, CT-10). Zero não espera.
 	ProcessDelay time.Duration
-	Reconnect    client.ReconnectOptions
+	// Display, quando presente, recebe uma linha legível por leitura,
+	// transição de estado, repetida e lacuna (modo de apresentação).
+	Display   io.Writer
+	Reconnect client.ReconnectOptions
 	// Metrics recebe as métricas do consumidor. Nil cria um registro
 	// próprio, acessível por Consumer.Metrics.
 	Metrics *metrics.Registry
@@ -156,6 +160,9 @@ func (c *Consumer) handle(m client.Message) {
 	if c.cfg.ProcessDelay > 0 {
 		time.Sleep(c.cfg.ProcessDelay)
 	}
+	if c.cfg.Display != nil {
+		c.display(m, obs)
+	}
 	log := c.log.With("sensor_id", m.SensorID, "topic", m.Topic, "seq", m.Seq)
 
 	switch obs.Outcome {
@@ -177,5 +184,48 @@ func (c *Consumer) handle(m client.Message) {
 			"temperatura", m.Temperature,
 			"timestamp", m.Timestamp.Format(time.RFC3339Nano),
 			"latencia", obs.Latency)
+	}
+}
+
+// display escreve a mensagem em uma linha legível (modo de apresentação).
+func (c *Consumer) display(m client.Message, obs Observation) {
+	writeDisplay(c.cfg.Display, m, obs)
+}
+
+// writeDisplay escreve uma linha legível por leitura, transição de estado,
+// repetida ou lacuna. Usada pelo -mostrar e pelo consumidor manual.
+func writeDisplay(w io.Writer, m client.Message, obs Observation) {
+	now := time.Now().Format("15:04:05")
+	say := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
+	switch obs.Outcome {
+	case OutcomeStatus:
+		say("%s  %-14s agora esta %s\n", now, m.SensorID, strings.ToUpper(m.Status.String()))
+	case OutcomeDuplicate:
+		say("%s  %-14s seq %-6d repetida (descartada pela deduplicacao)\n", now, m.SensorID, m.Seq)
+	case OutcomeOld:
+		say("%s  %-14s seq %-6d antiga (ja processada; descartada)\n", now, m.SensorID, m.Seq)
+	case OutcomeAccepted:
+		switch {
+		case obs.Missing > 0 && obs.Marked:
+			say("%s  %-14s ATENCAO: %d leitura(s) perdida(s) por retencao da fila (GAP_BEFORE)\n", now, m.SensorID, obs.Missing)
+		case obs.Missing > 0:
+			say("%s  %-14s ATENCAO: %d leitura(s) faltando antes desta (buffer do sensor cheio ou perda)\n", now, m.SensorID, obs.Missing)
+		case obs.Marked:
+			say("%s  %-14s ATENCAO: o broker avisou perda por retencao antes desta leitura\n", now, m.SensorID)
+		}
+		say("%s  %-14s seq %-6d %7.2f C   medida ha %s\n",
+			now, m.SensorID, m.Seq, m.Temperature, formatAge(obs.Latency))
+	}
+}
+
+// formatAge mostra a idade da leitura em ms, s ou min, conforme o tamanho.
+func formatAge(d time.Duration) string {
+	switch {
+	case d < time.Second:
+		return fmt.Sprintf("%d ms", d.Milliseconds())
+	case d < time.Minute:
+		return fmt.Sprintf("%.1f s", d.Seconds())
+	default:
+		return d.Round(time.Second).String()
 	}
 }

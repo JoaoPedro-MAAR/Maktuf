@@ -15,10 +15,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JoaoPedro-MAAR/Maktuf/internal/broker"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/client"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/consumer"
 	"github.com/JoaoPedro-MAAR/Maktuf/internal/metrics"
+	"github.com/JoaoPedro-MAAR/Maktuf/internal/vip"
 )
 
 func main() {
@@ -30,7 +30,7 @@ func main() {
 
 func run() error {
 	var cfg consumer.Config
-	flag.StringVar(&cfg.Addr, "addr", broker.DefaultAddr, "endereco TCP do broker")
+	flag.StringVar(&cfg.Addr, "addr", vip.DefaultAddr, "endereco do vip (ambiente completo); para um broker sozinho, o endereco dele, ex.: 127.0.0.1:7000")
 	flag.StringVar(&cfg.ClientID, "client-id", consumer.DefaultClientID, "identificador do consumidor (mantem o cursor no broker)")
 	filters := flag.String("filters", strings.Join(consumer.DefaultFilters, ","), "filtros de topico separados por virgula")
 	flag.IntVar(&cfg.DedupWindow, "dedup-window", client.DefaultDedupLimit, "chaves sensor_id+seq lembradas pela deduplicacao")
@@ -44,6 +44,7 @@ func run() error {
 	duration := flag.Duration("duration", 0, "tempo de execucao (0 = ate SIGINT/SIGTERM)")
 	report := flag.Duration("report", 10*time.Second, "intervalo do resumo periodico (0 = so no fim)")
 	debug := flag.Bool("debug", false, "loga cada leitura")
+	show := flag.Bool("mostrar", false, "modo apresentacao: uma linha legivel por leitura no stdout; o log so mostra avisos")
 	metricsAddr := flag.String("metrics-addr", "", "endereco HTTP do /metrics (vazio = desligado)")
 	flag.Parse()
 
@@ -54,6 +55,10 @@ func run() error {
 	}
 
 	level := slog.LevelInfo
+	if *show {
+		cfg.Display = os.Stdout
+		level = slog.LevelWarn
+	}
 	if *debug {
 		level = slog.LevelDebug
 	}
