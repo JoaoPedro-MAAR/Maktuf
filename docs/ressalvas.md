@@ -151,6 +151,43 @@ de aceitar leituras que um failover posterior poderia perder (RPO = 0,
 RNF-07). Os sensores mantêm as leituras no buffer e o primário volta a atender
 quando o Juiz ou a reserva retornam.
 
+## Dupla falha: reserva dessincronizada e primário fora
+
+Se a reserva estiver dessincronizada (`state = 3`) quando o primário cair, o
+Juiz não a promove (DP-13): ela não é candidata por estado nem por índice de
+replicação, e o Juiz registra o failover como bloqueado ("reserva
+dessincronizada"). O sistema fica indisponível até o primário voltar; ao
+reiniciar, ele recebe `PROMOTE` com o próprio id, volta a atender e
+ressincroniza a reserva.
+
+**Por que não promover a reserva mesmo assim.** Enquanto a reserva estava
+dessincronizada, o primário confirmou leituras com `PUBACK(PERSISTED)` só com o
+próprio disco (ver "RPO = 0 só com a reserva sincronizada"), e os sensores já as
+apagaram do buffer. Promover a reserva perderia essas leituras de forma
+permanente e silenciosa, violando o RF-45 e o RPO = 0 (RNF-07). O
+enunciado do Cenário A dá prioridade à confiabilidade por mensagem e aceita
+latência relaxada. Neste cenário, ficar indisponível não significa perder
+dados: os sensores já foram projetados para longos períodos offline e guardam
+as leituras no buffer persistente (86.400 leituras por padrão, cerca de 24 h de
+um sensor contínuo), reenviando-as quando o serviço volta. A indisponibilidade
+vira atraso, que pode ser recuperado; a perda de leituras confirmadas, não.
+
+Também é uma dupla falha: toda falha isolada continua tolerada (queda do
+primário com a reserva sincronizada gera failover; queda da reserva leva o
+primário ao modo degradado; queda do Juiz não para os brokers).
+
+**Custos aceitos:**
+
+- **O buffer do sensor é finito.** Se o primário ficar fora por mais tempo do
+  que o buffer comporta, o sensor descarta a leitura mais antiga (RF-26). Numa
+  indisponibilidade muito longa, esperar pode perder mais leituras do que a
+  promoção perderia, já que a janela de modo degradado costuma ser curta.
+- **Não há promoção forçada.** Se o disco do primário for perdido, ele nunca
+  volta, e o sistema fica parado até uma intervenção manual. O Juiz não oferece
+  um comando para o operador trocar conscientemente consistência por
+  disponibilidade (por exemplo, promover a reserva dessincronizada aceitando a
+  perda da janela de modo degradado). Fica como trabalho futuro.
+
 ## Partição de rede com a conexão de replicação meio-aberta
 
 A reserva recusa a promoção enquanto a conexão de replicação está aberta, o

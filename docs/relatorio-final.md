@@ -123,6 +123,7 @@ assinante com retenção e as métricas. Fontes em PlantUML em `docs/diagramas/`
 | TCP + protocolo binário próprio (DP-11) | Entrega ordenada por conexão; ~35 bytes por leitura | Gasto de energia em handshake a cada reconexão; protocolo próprio de manter | - |
 | 2 brokers + 1 Juiz (DP-12) e vip (DP-15) | Failover automático e transparente para os clientes | O Juiz é ponto único de falha da **coordenação** (não dos dados); o vip é um proxy, não um IP virtual de verdade | `queda_juiz`, `queda_primario` |
 | Proteção contra split-brain (DP-14) | Nunca dois primários aceitando escrita | Com o Juiz e a reserva fora ao mesmo tempo, o primário para de confirmar escritas (troca disponibilidade por consistência) | - |
+| Reserva dessincronizada nunca é promovida (DP-13) | Leituras confirmadas em modo degradado, que só existem no disco do primário, não se perdem num failover | Com a reserva dessincronizada e o primário fora, o sistema fica indisponível até o primário voltar; não há promoção forçada, então a perda do disco do primário exige intervenção manual (ver ressalvas.md) | - |
 
 ## 4. Metodologia
 
@@ -528,6 +529,10 @@ acompanhava a escala de latência do próprio sistema.
   de energia.
 - **Juiz único** (DP-12): é ponto único de falha da coordenação. Sem ele, os
   dados seguem fluindo (comprovado em `queda_juiz`), mas não há failover.
+- **Sem promoção forçada** (DP-13): com a reserva dessincronizada e o
+  primário fora, o sistema espera o primário voltar. Se o disco dele for
+  perdido, não há comando para o operador promover a reserva aceitando a
+  perda da janela de modo degradado; hoje isso exige intervenção manual.
 - **Resolução dos percentis.** Os percentis vêm de buckets de histograma; o
   RNF-01 estimado em 9,66 s antes do ajuste significa "entre 5 e 10 s".
 - **Runner.** Numa execução, o `offline_sono` não subiu por colisão de porta
